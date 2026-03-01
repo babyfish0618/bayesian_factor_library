@@ -37,11 +37,13 @@ indicator_weights:
       icir: 0.5
       ls_return: 0.3
       rank_percentile: 0.2
+      # 权重和: 1.0
     unselected:
       icir: 0.6            # 没选中因子更看重ICIR
       ls_return: 0.2
       rank_percentile: 0.1
       marginal_contrib: 0.1  # 边际贡献权重
+      # 权重和: 1.0
 
 # ==================== 成功阈值配置 ====================
 success_thresholds:

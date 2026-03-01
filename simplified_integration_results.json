@@ -1,0 +1,211 @@
+{
+  "parameters": {
+    "num_stocks": 30,
+    "num_factors": 15,
+    "target_selection_size": 3
+  },
+  "selection_history": [
+    {
+      "date": "2023-01-01",
+      "selected": [
+        "F008",
+        "F014",
+        "F002"
+      ],
+      "performance": {
+        "F008": {
+          "icir": 3.044628162043064,
+          "rank_percentile": 0.6901031290364773
+        },
+        "F014": {
+          "icir": 4.20348371496227,
+          "rank_percentile": 0.5993351287534818
+        },
+        "F002": {
+          "icir": 5.284708992034984,
+          "rank_percentile": 0.6076814850456842
+        }
+      }
+    },
+    {
+      "date": "2023-01-11",
+      "selected": [
+        "F014",
+        "F001",
+        "F002"
+      ],
+      "performance": {
+        "F014": {
+          "icir": 4.56934888224433,
+          "rank_percentile": 0.3997613204506146
+        },
+        "F001": {
+          "icir": 2.898576274341309,
+          "rank_percentile": 0.6082733445747337
+        },
+        "F002": {
+          "icir": 4.688942377351615,
+          "rank_percentile": 0.4379250625746102
+        }
+      }
+    },
+    {
+      "date": "2023-01-21",
+      "selected": [
+        "F010",
+        "F002",
+        "F003"
+      ],
+      "performance": {
+        "F010": {
+          "icir": 4.820016179077421,
+          "rank_percentile": 0.31078688820315836
+        },
+        "F002": {
+          "icir": 5.567362229619603,
+          "rank_percentile": 0.3940723439264426
+        },
+        "F003": {
+          "icir": 3.1644734513366353,
+          "rank_percentile": 0.6019728150648253
+        }
+      }
+    },
+    {
+      "date": "2023-01-31",
+      "selected": [
+        "F002",
+        "F003",
+        "F010"
+      ],
+      "performance": {
+        "F002": {
+          "icir": 5.082754374777182,
+          "rank_percentile": 0.7888305924018651
+        },
+        "F003": {
+          "icir": 2.6493172439277886,
+          "rank_percentile": 0.7597179380144213
+        },
+        "F010": {
+          "icir": 4.338122851269887,
+          "rank_percentile": 0.5126527187387915
+        }
+      }
+    },
+    {
+      "date": "2023-02-10",
+      "selected": [
+        "F009",
+        "F014",
+        "F001"
+      ],
+      "performance": {
+        "F009": {
+          "icir": 3.0850268023121075,
+          "rank_percentile": 0.5225262595365618
+        },
+        "F014": {
+          "icir": 5.349626323416221,
+          "rank_percentile": 0.7523303065124725
+        },
+        "F001": {
+          "icir": 2.6950542164352242,
+          "rank_percentile": 0.39177086188282473
+        }
+      }
+    }
+  ],
+  "factors": [
+    {
+      "id": "F000",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F001",
+      "alpha": 3.0,
+      "beta": 1.0,
+      "success_rate": 0.75
+    },
+    {
+      "id": "F002",
+      "alpha": 5.0,
+      "beta": 1.0,
+      "success_rate": 0.8333333333333334
+    },
+    {
+      "id": "F003",
+      "alpha": 3.0,
+      "beta": 1.0,
+      "success_rate": 0.75
+    },
+    {
+      "id": "F004",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F005",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F006",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F007",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F008",
+      "alpha": 2.0,
+      "beta": 1.0,
+      "success_rate": 0.6666666666666666
+    },
+    {
+      "id": "F009",
+      "alpha": 2.0,
+      "beta": 1.0,
+      "success_rate": 0.6666666666666666
+    },
+    {
+      "id": "F010",
+      "alpha": 3.0,
+      "beta": 1.0,
+      "success_rate": 0.75
+    },
+    {
+      "id": "F011",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F012",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F013",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "success_rate": 0.5
+    },
+    {
+      "id": "F014",
+      "alpha": 4.0,
+      "beta": 1.0,
+      "success_rate": 0.8
+    }
+  ]
+}

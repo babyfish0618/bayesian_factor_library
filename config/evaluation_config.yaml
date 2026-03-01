@@ -1,0 +1,115 @@
+# 贝叶斯因子选择器 - 评价配置
+# 版本: 1.0.0
+# 日期: 2026-03-01
+
+# ==================== 时间窗口配置 ====================
+time_windows:
+  # 选择因子时的多时间尺度
+  selection:
+    short_term: 5      # 短期窗口 (天)
+    medium_term: 20    # 中期窗口 (天) 
+    long_term: 60      # 长期窗口 (天)
+  
+  # 评估成功时的窗口
+  evaluation:
+    selected_short: 10     # 选中因子评估窗口 (较短)
+    selected_long: 20      # 选中因子评估窗口 (较长)
+    unselected_short: 20   # 没选中因子评估窗口 (较短)
+    unselected_long: 40    # 没选中因子评估窗口 (较长，更严格)
+  
+  # IC计算相关
+  ic_calculation:
+    min_periods: 10        # 最小有效天数
+    rolling_window: 20     # 滚动计算窗口
+
+# ==================== 指标权重配置 ====================
+indicator_weights:
+  # 选择因子时的指标权重
+  selection:
+    icir: 0.4              # ICIR权重
+    ls_return: 0.3         # 多空收益权重
+    rank_percentile: 0.2   # 排名权重
+    stability: 0.1         # 稳定性权重
+  
+  # 评估成功时的指标权重
+  evaluation:
+    selected:
+      icir: 0.5
+      ls_return: 0.3
+      rank_percentile: 0.2
+    unselected:
+      icir: 0.6            # 没选中因子更看重ICIR
+      ls_return: 0.2
+      rank_percentile: 0.1
+      marginal_contrib: 0.1  # 边际贡献权重
+
+# ==================== 成功阈值配置 ====================
+success_thresholds:
+  # 选中因子阈值 (相对宽松)
+  selected:
+    icir: 0.8              # ICIR > 0.8
+    ls_return_annual: 0.05  # 年化多空收益 > 5%
+    rank_percentile: 0.7    # 排名在前70%
+    win_rate: 0.55          # 胜率 > 55%
+  
+  # 没选中因子阈值 (非常严格)
+  unselected:
+    icir: 1.5              # ICIR > 1.5 (几乎2倍)
+    ls_return_annual: 0.10  # 年化多空收益 > 10%
+    rank_percentile: 0.5    # 排名在前50%
+    win_rate: 0.60          # 胜率 > 60%
+    max_correlation: 0.6    # 与选中因子最大相关性 < 0.6
+
+# ==================== 贝叶斯参数配置 ====================
+bayesian:
+  prior_alpha: 1.0          # 先验成功次数
+  prior_beta: 1.0           # 先验失败次数
+  update_rules:
+    selected_success: 1.0   # 选中因子成功: α += 1
+    selected_failure: 1.0   # 选中因子失败: β += 1
+    unselected_success: 0.5 # 没选中因子成功: α += 0.5 (更谨慎)
+    unselected_failure: 0.0 # 没选中因子失败: 不更新 (不轻易惩罚)
+
+# ==================== 相关性计算配置 ====================
+correlation:
+  method: "pearson"         # pearson/spearman/kendall
+  min_common_periods: 20    # 最小共同期数
+  significance_level: 0.05  # 显著性水平
+
+# ==================== 边际贡献配置 ====================
+marginal_contribution:
+  simulation_method: "portfolio_optimization"  # portfolio_optimization/correlation_based
+  portfolio_methods:
+    - "equal_weight"        # 等权组合
+    - "icir_weighted"       # ICIR加权
+    - "sharpe_optimized"    # 夏普优化
+  replacement_strategy: "correlation_based"    # correlation_based/effectiveness_based
+  improvement_threshold: 0.01  # 最小改善阈值
+
+# ==================== 归一化配置 ====================
+normalization:
+  icir:
+    method: "sigmoid"       # linear/sigmoid/logistic
+    scale_factor: 3.0       # ICIR=3.0时得分≈1.0
+    shift: 0.0
+  
+  ls_return:
+    method: "linear"
+    max_value: 0.50         # 年化50%收益得1.0
+    min_value: -0.20        # 年化-20%收益得0.0
+  
+  rank_percentile:
+    method: "inverse"       # 排名越前得分越高
+    # rank_percentile=0.2 → score=0.8
+
+# ==================== 调试与日志配置 ====================
+debug:
+  log_level: "INFO"         # DEBUG/INFO/WARNING/ERROR
+  save_intermediate: true   # 保存中间结果
+  plot_figures: false       # 生成图表
+  performance_tracking: true # 跟踪性能指标
+
+# ==================== 版本控制 ====================
+version: "1.0.0"
+description: "贝叶斯因子选择器评价配置 - 多时间尺度多指标版本"
+last_updated: "2026-03-01"

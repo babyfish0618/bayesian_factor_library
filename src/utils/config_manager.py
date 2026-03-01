@@ -105,9 +105,17 @@ class EvaluationConfig:
             # 验证权重和为1
             for category, weights in self.indicator_weights.items():
                 if isinstance(weights, dict):
-                    total = sum(w for w in weights.values() if isinstance(w, (int, float)))
-                    if abs(total - 1.0) > 0.01:
-                        raise ValueError(f"{category} 权重和必须为1.0，当前为{total}")
+                    # 处理嵌套字典结构（如evaluation包含selected/unselected）
+                    if category == 'evaluation':
+                        for sub_category, sub_weights in weights.items():
+                            if isinstance(sub_weights, dict):
+                                total = sum(w for w in sub_weights.values() if isinstance(w, (int, float)))
+                                if abs(total - 1.0) > 0.01:
+                                    raise ValueError(f"{category}.{sub_category} 权重和必须为1.0，当前为{total}")
+                    else:
+                        total = sum(w for w in weights.values() if isinstance(w, (int, float)))
+                        if abs(total - 1.0) > 0.01:
+                            raise ValueError(f"{category} 权重和必须为1.0，当前为{total}")
             
             # 验证阈值合理性
             if self.success_thresholds['selected']['icir'] >= self.success_thresholds['unselected']['icir']:

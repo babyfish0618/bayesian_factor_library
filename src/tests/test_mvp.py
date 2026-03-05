@@ -34,8 +34,9 @@ MVP测试代码 - 贝叶斯因子选择器基础功能测试
 import sys
 import os
 
-# 添加 src 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+# 添加项目根目录到 Python 路径
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 import numpy as np
 import random

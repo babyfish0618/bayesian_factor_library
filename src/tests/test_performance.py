@@ -34,11 +34,12 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 添加项目根目录到 Python 路径
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
-from src.core.factor_enhanced import EnhancedFactor
-from src.core.bayesian_selector_v2 import BayesianSelectorV2
+from core.factor_enhanced import EnhancedFactor
+from core.bayesian_selector_v2 import BayesianSelectorV2
 
 
 class PerformanceTestConfig:

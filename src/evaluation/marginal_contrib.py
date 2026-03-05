@@ -9,10 +9,10 @@ import pandas as pd
 from dataclasses import dataclass, field
 from enum import Enum
 
-# 导入相关模块
-from ..core.correlation_calculator import CorrelationCalculator
-from .portfolio_simulator import PortfolioSimulator, PortfolioMethod, ReplacementStrategy
-from ..core.factor_enhanced import EnhancedFactor
+# 导入相关模块 (使用绝对导入)
+from core.correlation_calculator import CorrelationCalculator
+from evaluation.portfolio_simulator import PortfolioSimulator, PortfolioMethod, ReplacementStrategy
+from core.factor_enhanced import EnhancedFactor
 
 
 class EvaluationResult(Enum):

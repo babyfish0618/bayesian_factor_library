@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 尝试导入，如果失败则内联定义
 try:
     from simulation.stock_simulator import ProperStockSimulator
-    from .mvp_selector import Factor, MVPBayesianSelector
+    from core.mvp_selector import Factor, MVPBayesianSelector
 except ImportError:
     # 如果导入失败，提供简化版本
     print("警告: 无法导入模块，使用简化版本")

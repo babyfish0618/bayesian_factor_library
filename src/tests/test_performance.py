@@ -126,7 +126,9 @@ def calculate_rolling_returns(returns: np.ndarray, window: int) -> np.ndarray:
     rolling_returns = np.zeros((n_stocks, n_days - window + 1))
     
     for i in range(n_days - window + 1):
-        rolling_returns[:, i] = (cumulative_returns[:, i + window] / 
+        # cumulative_returns[:, i + window - 1] 是第 i+window-1 天的累积收益
+        # cumulative_returns[:, i] 是第 i 天的累积收益
+        rolling_returns[:, i] = (cumulative_returns[:, i + window - 1] / 
                                (cumulative_returns[:, i] + 1e-10)) - 1
     
     return rolling_returns

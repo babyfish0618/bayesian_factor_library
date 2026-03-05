@@ -10,11 +10,11 @@ from datetime import datetime
 import yaml
 import json
 
-# 导入新模块
-from .factor_enhanced import EnhancedFactor
-from .correlation_calculator import CorrelationCalculator
-from ..evaluation.marginal_contrib import MarginalContributionEvaluator, EvaluationResult
-from ..utils.config_manager import ConfigManager, EvaluationConfig
+# 导入新模块 (使用绝对导入以兼容sys.path)
+from core.factor_enhanced import EnhancedFactor
+from core.correlation_calculator import CorrelationCalculator
+from evaluation.marginal_contrib import MarginalContributionEvaluator, EvaluationResult
+from utils.config_manager import ConfigManager, EvaluationConfig
 
 
 @dataclass

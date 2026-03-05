@@ -31,11 +31,17 @@ MVP测试代码 - 贝叶斯因子选择器基础功能测试
 日期: 2026-02-28
 """
 
+import sys
+import os
+
+# 添加 src 目录到 Python 路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
 import numpy as np
 import random
 from datetime import datetime, timedelta
 from typing import List, Dict
-from mvp_selector import Factor, MVPBayesianSelector
+from core.mvp_selector import Factor, MVPBayesianSelector
 
 
 def generate_test_factors(num_factors: int = 100, num_months: int = 12) -> List[Factor]:

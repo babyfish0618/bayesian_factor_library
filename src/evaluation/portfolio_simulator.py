@@ -64,23 +64,25 @@ class PortfolioSimulator:
     3. 评估因子边际贡献
     4. 支持因子替换策略
     """
-    
+
+    _DEFAULT_CONFIG = {
+        'portfolio_method': 'equal_weight',
+        'replacement_strategy': 'correlation_based',
+        'improvement_threshold': 0.01,
+        'annualization_factor': 252,  # 年化因子
+        'risk_free_rate': 0.02,       # 无风险利率
+        'max_weight': 0.3,            # 最大单因子权重
+        'min_weight': 0.01            # 最小单因子权重
+    }
+
     def __init__(self, config: Optional[Dict] = None):
         """
         初始化组合模拟器
         
         参数：
-            config: 配置参数
+            config: 配置参数（缺失的键将使用默认值）
         """
-        self.config = config or {
-            'portfolio_method': 'equal_weight',
-            'replacement_strategy': 'correlation_based',
-            'improvement_threshold': 0.01,
-            'annualization_factor': 252,  # 年化因子
-            'risk_free_rate': 0.02,       # 无风险利率
-            'max_weight': 0.3,            # 最大单因子权重
-            'min_weight': 0.01            # 最小单因子权重
-        }
+        self.config = {**self._DEFAULT_CONFIG, **(config or {})}
     
     def build_portfolio(
         self,

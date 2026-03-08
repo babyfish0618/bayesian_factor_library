@@ -1,315 +1,209 @@
-# 代码架构速查文档
+# 代码架构速查文档（Iteration3 当前实现）
 
-> 生成时间: 2026-03-01
-> 目的: 帮助快速理解代码模块关系和核心函数
+> 更新时间: 2026-03-07
+> 目的: 快速理解当前代码模块关系、核心流程与跟踪输出
 
----
-
-## 1. 模块关系图 (Mermaid)
+## 1. 模块关系图
 
 ```mermaid
 graph TB
     subgraph 入口层
-        A[run_demo.py<br/>演示程序]
+        A[src/tests/test_performance.py<br/>性能测试入口]
     end
-    
-    subgraph 核心选择器层
-        B[BayesianSelectorV2<br/>新版贝叶斯选择器]
-        C[MVPBayesianSelector<br/>MVP选择器]
+
+    subgraph 实验编排层
+        K[ScenarioComparator<br/>多场景对比]
+        M[StabilityExperimentRunner<br/>长周期稳定性实验]
+        L[FactorLibraryIterationEngine<br/>单场景迭代引擎]
     end
-    
-    subgraph 核心数据层
-        D[EnhancedFactor<br/>增强版因子类]
-        E[FactorPerformance<br/>表现数据]
+
+    subgraph 核心选择层
+        B[BayesianSelectorV2<br/>选择与更新主控制器]
+        C[EnhancedFactor<br/>因子状态与历史表现]
     end
-    
-    subgraph 评估系统层
-        F[CorrelationCalculator<br/>相关性计算]
-        G[PortfolioSimulator<br/>组合模拟]
-        H[MarginalContributionEvaluator<br/>边际贡献评估]
+
+    subgraph 评估层
+        D[CorrelationCalculator<br/>相关性计算]
+        E[PortfolioSimulator<br/>组合构建与替换模拟]
+        F[MarginalContributionEvaluator<br/>未选中因子边际评估]
     end
-    
+
     subgraph 数据模拟层
-        I[ProperStockSimulator<br/>股票数据模拟器]
+        J[LatentFactorDataSimulator<br/>测试数据模拟器]
     end
-    
+
+    subgraph 跟踪与输出层
+        G[FactorLibraryTracker<br/>轮次/因子状态跟踪]
+    end
+
     subgraph 配置层
-        J[ConfigManager<br/>配置管理器]
-        K[evaluation_config.yaml<br/>配置文件]
+        H[ConfigManager]
+        I[config/evaluation_config.yaml]
     end
-    
-    A --> B
+
+    A --> K
+    A --> M
+    K --> L
+    M --> L
+    L --> B
+    L --> G
+    L --> J
+    B --> C
     B --> D
     B --> F
     B --> H
-    B --> J
-    
-    H --> G
-    H --> F
-    
-    D --> E
-    J --> K
-    
-    C --> D
-    I --> C
+    F --> D
+    F --> E
+    H --> I
 ```
 
----
+## 2. 核心模块
 
-## 2. 核心模块功能说明
+说明:
+- `src/core/__archive/` 与 `src/simulation/__archive/` 存放历史MVP链路模块，不参与当前主流程。
 
-### 2.1 BayesianSelectorV2 (主选择器)
-**文件**: `src/core/bayesian_selector_v2.py`
+### 2.1 `src/core/bayesian_selector_v2.py`
+- `select_factors(current_date, target_size)`
+- `update_from_performance(selected_ids, performance_data, current_date)`
+- `verbose` 开关（可关闭过程明细日志，仅保留外层关键统计）
+- `SelectionResult`: 记录当轮选中与候选得分
+- `UpdateResult`: 记录选中/未选中更新结果、统计、`marginal_details`
 
-| 方法 | 功能 | 关键参数 |
-|------|------|----------|
-| `__init__` | 初始化选择器，加载配置 | config_path |
-| `add_factor()` | 添加单个因子 | EnhancedFactor对象 |
-| `add_factors()` | 批量添加因子 | List[EnhancedFactor] |
-| `select_factors()` | **核心**: 选择因子 | current_date, target_size |
-| `update_from_performance()` | **核心**: 更新贝叶斯参数 | selected_ids, performance_data, current_date |
-| `_calculate_factor_scores()` | 计算因子综合得分 | current_date |
-| `_thompson_sampling_selection()` | Thompson Sampling选择 | candidate_scores, target_size |
-| `save_state()` / `load_state()` | 状态持久化 | filepath |
+关键逻辑:
+- 选择: `final_score = 0.7 * aggregate_score + 0.3 * Beta(alpha,beta)采样`
+- 更新:
+- 选中因子按 selected success 规则更新 alpha/beta
+- 未选中因子走边际贡献评估（SUCCESS/FAILURE/NEUTRAL/UNCERTAIN）
 
-**核心流程**:
-```
-select_factors() 
-  → _calculate_factor_scores() [多窗口多指标打分]
-  → _thompson_sampling_selection() [贝叶斯采样]
-  → 返回选中因子列表
+### 2.2 `src/core/factor_enhanced.py`
+- 因子数据与历史表现容器
+- 提供多窗口统计、ICIR、LS 统计、综合分
+- 管理贝叶斯参数 `alpha/beta`
 
-update_from_performance()
-  → 评估选中因子是否成功
-  → 边际贡献评估没选中因子
-  → 更新贝叶斯参数 (alpha, beta)
-```
+### 2.3 `src/evaluation/marginal_contrib.py`
+- 对未选中因子执行边际贡献评估
+- 组合模拟 + 相关性 + 候选质量综合打分
+- 输出 `MarginalContributionResult`
 
----
+### 2.4 `src/evaluation/portfolio_simulator.py`
+- 组合构建与替换评估
+- 支持 `equal_weight/icir_weighted/sharpe_optimized/...`
+- 输出边际改善 `marginal_improvement` 与替换可行性
 
-### 2.2 EnhancedFactor (因子数据)
-**文件**: `src/core/factor_enhanced.py`
+### 2.5 `src/core/correlation_calculator.py`
+- 因子收益序列相关性矩阵
+- 相关性显著性与汇总指标
 
-| 方法 | 功能 | 返回值 |
-|------|------|--------|
-| `add_daily_performance()` | 添加日度表现 | None |
-| `get_recent_performance()` | 获取最近N天表现 | List[FactorPerformance] |
-| `calculate_icir()` | 计算ICIR (IC均值/标准差) | float |
-| `calculate_ls_return_stats()` | 计算多空收益统计 | Dict |
-| `get_aggregate_score()` | 获取综合得分 | float |
-| `update_bayesian_params()` | 更新贝叶斯参数 | None |
-| `get_success_rate()` | 获取历史成功率 | float |
+### 2.6 `src/evaluation/library_tracker.py`
+- 每轮跟踪:
+- 选中结构: good/medium/bad
+- 选中成功结构: good/medium/bad
+- 每因子逐轮状态: 是否选中、是否成功、边际评估、打分、更新前后 alpha/beta
+- 因子库整体指标: all vs selected 的 ICIR/LS 分布
+- 导出文件:
+- `round_summary.csv`
+- `factor_round_status.csv`
+- `library_metrics.json`
+- `final_library.json`（最终固化因子库版本，由测试入口生成）
 
-**关键属性**:
-- `id`: 因子ID
-- `alpha`: 贝叶斯成功次数 (先验)
-- `beta`: 贝叶斯失败次数 (先验)
-- `performance_history`: List[FactorPerformance]
+### 2.12 `src/evaluation/library_dynamics_plotter.py`
+- 根据每轮验证指标生成 `validation_dynamics.svg`
+- 标注稳定性通过轮次与最终出库轮次
+- 可选生成 `test_dynamics.svg`（含 test ICIR/Sharpe/rtn）
 
----
+### 2.7 `src/simulation/latent_factor_data_simulator.py`（模拟数据逻辑）
+- 统一封装测试数据生成逻辑（日期、股票收益、滚动收益、因子历史表现）
+- 标签收益口径: `R(t+1->t+n)`（不含t当日）
+- 多空收益口径: 因子加权多空（多头权重和=1，空头权重和=1）
+- 因子仍保留长期分类标签，并引入潜在状态按期切换
+- 可选按 `train/validation/test` 使用不同状态转移矩阵（`PHASE_TRANSITION_PROBS`）
+- 对测试入口提供稳定接口：
+- `build_market_data()`
+- `generate_factors()`
+- 后续接入真实数据时，可在 simulation/data-source 层替换，不改测试评估主流程
 
-### 2.3 CorrelationCalculator (相关性)
-**文件**: `src/core/correlation_calculator.py`
+### 2.8 `src/workflows/factor_library_iteration_engine.py`（流程编排）
+- 封装单场景完整流程：
+- 数据准备 -> 选择更新 -> OOS评估 -> 稳定性评估 -> 早停判定 -> 最终库固化
+- 支持两种评估模式：
+- `strict_holdout`（train迭代 + 固定validation评估）
+- `walk_forward_test`（滚动到test末尾）
+- `strict_holdout` 最终选库为“稳定性通过轮次中的Validation最优轮次”，并保留最后一轮对照
+- 输出 `final_library.json`，作为后续融合阶段输入候选
 
-| 方法 | 功能 |
-|------|------|
-| `calculate_correlation()` | 计算两个因子相关性 |
-| `calculate_correlation_matrix()` | 计算相关性矩阵 |
-| `calculate_significance()` | 计算显著性 |
+### 2.9 `src/experiments/factor_library_scenario_experiment.py`（实验管理）
+- 封装多场景构造与批量运行
+- 输出场景对比汇总（good选中率、召回率、更新成功率等）
 
----
+### 2.11 `src/experiments/phase_regime_comparison_experiment.py`
+- 分阶段状态转移（train/validation/test）对照实验
+- 用于验证“验证/测试阶段环境变化”对最终出库质量的影响
 
-### 2.4 PortfolioSimulator (组合模拟)
-**文件**: `src/evaluation/portfolio_simulator.py`
+### 2.10 `src/experiments/factor_library_stability_experiment.py`（稳定性实验）
+- 面向“长历史 + 多轮次”实验，观察因子库收敛行为
+- 复用 `FactorLibraryIterationEngine` 跑单场景
+- 追加稳定性产物导出：
+- `stability_convergence.svg`（稳定性/换手率/OOS/收敛指标曲线）
+- `stability_report_*.json`（同口径时序数据）
 
-| 方法 | 功能 |
-|------|------|
-| `simulate_portfolio()` | 模拟组合表现 |
-| `evaluate_replacement()` | 评估因子替换效果 |
-| `find_best_replacement()` | 寻找最佳替换因子 |
+## 3. 主流程（`test_performance.py` / `experiment_stability_early_stop.py`）
 
----
-
-### 2.5 MarginalContributionEvaluator (边际贡献)
-**文件**: `src/evaluation/marginal_contrib.py`
-
-| 方法 | 功能 |
-|------|------|
-| `evaluate_factor()` | 评估单个因子边际贡献 |
-| `evaluate_multiple_factors()` | 批量评估 |
-| `_calculate_marginal_score()` | 计算边际得分 |
-
----
-
-### 2.6 ProperStockSimulator (数据模拟)
-**文件**: `src/simulation/stock_simulator.py`
-
-| 方法 | 功能 |
-|------|------|
-| `generate_correlated_series()` | 生成与目标收益相关的因子得分 |
-| `calculate_weighted_long_short_return()` | 计算得分加权多空收益 |
-
-**关键数学**:
-```
-因子得分 = ρ × 收益 + √(1-ρ²) × 噪声
-其中 ρ = 目标IC
-```
-
----
-
-### 2.7 ConfigManager (配置)
-**文件**: `src/utils/config_manager.py`
-
-| 方法 | 功能 |
-|------|------|
-| `load_config()` | 加载YAML配置 |
-| `get_window_weights()` | 获取时间窗口权重 |
-| `get_indicator_weights()` | 获取指标权重 |
-
----
-
-## 3. 数据流总览
-
-```
-原始数据
-    ↓
-EnhancedFactor (存储历史表现)
-    ↓
-BayesianSelectorV2.select_factors()
-    ├── _calculate_factor_scores()
-    │   └── EnhancedFactor.get_aggregate_score()
-    │       └── 多窗口 (5/20/60天) × 多指标 (ICIR/收益/排名/稳定性)
-    │
-    └── _thompson_sampling_selection()
-        └── Beta采样: score × 0.7 + β(alpha,beta) × 0.3
-    
-    ↓
-选出Top-K因子
-    
-    ↓
-update_from_performance()
-    ├── 选中因子 → 判断成功 → 更新alpha/beta
-    │
-    └── 没选中因子 → 边际贡献评估
-        ├── CorrelationCalculator (计算相关性)
-        ├── PortfolioSimulator (模拟组合)
-        └── MarginalContributionEvaluator (决策)
+```text
+生成模拟数据
+  -> experiments层构造场景
+  -> workflows层驱动单场景迭代
+  -> simulation层提供市场数据与因子历史表现
+  -> 按 train/validation/test 比例切分时间轴
+  -> 先基于上一轮库在新观测区间的表现执行 posterior 更新
+  -> selector.select_factors() 选出当轮库
+  -> 构造用于更新的 performance_data（信号-标签配对: x(t) -> R(t+1->t+n)）
+  -> tracker.record_round()
+循环多轮后:
+  -> 在固定validation区间计算OOS与稳定性指标(overlap/turnover)
+  -> 检查早停条件（收敛则提前结束）
+  -> tracker.export()
+  -> 导出 round_compact_summary.csv（每轮紧凑指标）
+  -> 导出 final_library.json
+  -> （稳定性实验）导出 stability_convergence.svg + stability_report.json
+  -> 打印总体指标与输出路径
 ```
 
----
+`src/tests/test_performance.py` 参数:
+- `--baseline-only`：仅运行 baseline，不做多场景对比
+- `--seed`：设置随机种子
+- `--num-stocks/--num-factors/--target-size/--num-days`：覆盖核心规模参数
+- `--horizon-days`：覆盖共享前瞻窗口（IC/LS共用）
+- `--annual-days`：覆盖年化天数
 
-## 4. 快速阅读路径
+`src/tests/experiment_phase_regime_comparison.py` 参数:
+- `--baseline-only`
+- `--num-stocks/--num-factors/--target-size/--num-days`
+- `--horizon-days`
+- `--annual-days`
 
-### 路径1: 理解主流程 (推荐)
-1. `run_demo.py` → 入口
-2. `bayesian_selector_v2.py` → 核心选择逻辑
-3. `factor_enhanced.py` → 数据结构
+## 4. 关键配置映射
 
-### 路径2: 理解评估系统
-1. `bayesian_selector_v2.py` → 如何调用评估
-2. `marginal_contrib.py` → 边际贡献逻辑
-3. `correlation_calculator.py` → 相关性计算
-4. `portfolio_simulator.py` → 组合模拟
+配置文件: `config/evaluation_config.yaml`
 
-### 路径3: 理解数据模拟
-1. `stock_simulator.py` → 核心模拟逻辑
-2. 关注 `calculate_weighted_long_short_return()` 方法
+- `time_windows.selection`: 选择阶段多窗口（默认 5/20/60）
+- `time_windows.evaluation.selected_short`: 选中因子 success 回看窗口（默认 10）
+- `success_thresholds.selected`: 选中因子 success 阈值
+- `success_thresholds.unselected`: 未选中因子边际评估阈值
+- `bayesian.update_rules`: alpha/beta 更新权重
+- `marginal_contribution`: 组合方法、替换策略、最小改善阈值
 
----
+## 5. 架构变更同步要求
 
-## 5. 关键配置项
+若出现以下任一变更，必须同步更新文档:
+- 模块职责/调用链变更
+- 选择逻辑或更新逻辑变更
+- 成功判定阈值或参数变更
+- 输出文件结构或字段变更
 
-**文件**: `config/evaluation_config.yaml`
+必须同步更新:
+- `docs/CODE_ARCHITECTURE.md`
+- `docs/EVALUATION_STANDARDS.md`
+- `docs/ITERATION3_SUMMARY.md`
 
-```yaml
-time_windows:
-  selection:      # 选择时用的时间窗口
-    short_term: 5
-    medium_term: 20
-    long_term: 60
-  evaluation:     # 评估时用的时间窗口
-    selected_short: 10
-    selected_long: 20
-    
-indicators:
-  weights:        # 指标权重
-    icir: 0.4
-    ls_return: 0.3
-    rank: 0.2
-    stability: 0.1
-
-success_thresholds:
-  selected:      # 选中因子的成功标准
-    icir: 0.8
-    ls_return_annual: 0.05
-    rank_percentile: 0.7
-    win_rate: 0.55
-  unselected:     # 没选中因子的成功标准 (更严格!)
-    icir: 1.5
-    ls_return_annual: 0.10
-```
-
----
-
-## 6. 常见问题
-
-### Q: 如何添加新因子?
-```python
-from src.core.factor_enhanced import EnhancedFactor
-
-factor = EnhancedFactor(
-    factor_id="F001",
-    expression="Div($high, $close)",
-    topic="momentum"
-)
-
-# 添加历史表现
-factor.add_daily_performance(
-    date="2024-01-01",
-    ic=0.05,
-    ls_return=0.001,
-    rank_percentile=0.3
-)
-
-selector.add_factor(factor)
-```
-
-### Q: 如何调整选择数量?
-```python
-# 方法1: 在select_factors中指定
-result = selector.select_factors("2024-01-31", target_size=10)
-
-# 方法2: 修改配置文件
-# config/evaluation_config.yaml 中的 target_size
-```
-
-### Q: 如何修改评估标准?
-```yaml
-# config/evaluation_config.yaml
-success_thresholds:
-  selected:
-    icir: 1.0  # 调高ICIR要求
-```
-
----
-
-## 7. 快速阅读路径 (推荐顺序)
-
-### 路径1: 理解主流程 (推荐新手)
-1. `run_demo.py` → 入口，了解整体运行方式
-2. `bayesian_selector_v2.py` → 核心选择逻辑，理解因子如何被选择和更新
-3. `factor_enhanced.py` → 数据结构，理解因子如何存储历史表现
-
-### 路径2: 理解评估系统
-1. `bayesian_selector_v2.py` → 看如何调用评估
-2. `marginal_contrib.py` → 边际贡献逻辑，理解为何选择/不选择某个因子
-3. `correlation_calculator.py` → 相关性计算
-4. `portfolio_simulator.py` → 组合模拟
-
-### 路径3: 理解数据模拟
-1. `stock_simulator.py` → 核心模拟逻辑
-2. 重点关注 `calculate_weighted_long_short_return()` 方法
-
----
-
-*文档自动生成，如有疑问请查看源代码注释*
+补充协议文档:
+- `docs/FACTOR_LIBRARY_EVAL_PROTOCOL.md`

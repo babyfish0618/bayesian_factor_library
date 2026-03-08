@@ -1,250 +1,224 @@
-# 评价标准与参数清单 - MVP版本
+# 评价标准与参数清单（Iteration3 当前实现）
 
-## 概述
-本文档记录当前MVP版本中所有评价标准、参数设置及相关函数。
-用于后续迭代的调整和优化参考。
+更新时间: 2026-03-07
+配置来源: `config/evaluation_config.yaml`
+核心实现: `src/core/bayesian_selector_v2.py`, `src/evaluation/marginal_contrib.py`
+协议文档: `docs/FACTOR_LIBRARY_EVAL_PROTOCOL.md`（Draft v2）
+流程编排: `src/workflows/factor_library_iteration_engine.py`
+稳定性实验: `src/experiments/factor_library_stability_experiment.py`
 
-## 一、核心评价标准体系
+## 1. 三套评价标准
 
-### 1.1 三套评价标准（设计理念）
-```
-1. 采样打分标准 (Scoring for Selection)
-   - 用途：选择因子时使用
-   - 特点：预测性、多窗口、平衡利用与探索
+说明:
+- 当前实现已对齐协议v2主时序：`Observe/Update -> Select -> Validate`。
+- 每个 `tau_r` 先用 `(tau_{r-1}, tau_r]` 新信息更新后验，再选 `S_r`。
+- 信号-标签配对口径: `x(t)` 对应 `R(t+1->t+n)`，不包含 `t` 当日收益。
+- C层OOS采用固定验证集窗口（不参与alpha/beta更新），非滚动21天口径。
 
-2. 判断成功-选中因子 (Success Evaluation for Selected Factors)
-   - 用途：更新选中因子的贝叶斯参数
-   - 特点：实际表现、相对宽松、基于真实结果
+### 1.1 采样打分标准（用于选择）
+- 目标: 在利用历史效果与探索不确定性之间平衡
+- 计算:
+- `aggregate_score`: 多窗口多指标得分
+- `bayesian_score`: `Beta(alpha, beta)` 采样
+- `final_score = 0.7 * aggregate_score + 0.3 * bayesian_score`
+- 选择方式: 按 `final_score` 降序取 Top-K
 
-3. 判断成功-没选中因子 (Success Evaluation for Unselected Factors)
-   - 用途：更新没选中因子的贝叶斯参数
-   - 特点：边际贡献、非常严格、基于模拟评估
-```
+### 1.2 判断成功（选中因子）
+- 回看窗口: `time_windows.evaluation.selected_short`（默认 10）
+- 最少有效数据: 5 条
+- success 条件（AND）:
+- `icir > success_thresholds.selected.icir`（默认 0.8）
+- `ls_sharpe > 0`
+- `rank_percentile < success_thresholds.selected.rank_percentile`（默认 0.7）
+- `win_rate > success_thresholds.selected.win_rate`（默认 0.55）
 
-## 二、具体参数设置
+说明:
+- 这里 `rank_percentile` 在 `test_performance.py` 中按“本轮选中集合内 ICIR 排名”构造，0 最好，1 最差。
 
-### 2.1 配置参数（`_get_default_config()`）
+### 1.3 判断成功（未选中因子）
+- 方式: 边际贡献评估（相关性 + 组合替换 + 候选质量）
+- 输出: `SUCCESS/FAILURE/NEUTRAL/UNCERTAIN`
+- 核心判定:
+- SUCCESS: `score >= min_score_for_success(默认0.7)` 且 `improvement > 0` 且 `max_correlation <= max_correlation(默认0.6)`
+- FAILURE: `score < 0.3` 或 `improvement < -0.1` 或 `max_correlation > 1.2 * max_allowed`
 
-#### 2.1.1 采样打分权重
-```python
-'scoring_weights': {
-    'bayesian': 0.7,      # 贝叶斯部分权重（Thompson Sampling）
-    'recent_perf': 0.3,   # 近期表现权重（ICIR）
-}
-```
+## 2. 更新规则（alpha/beta）
 
-#### 2.1.2 成功阈值
-```python
-'success_thresholds': {
-    # 选中因子标准（相对宽松）
-    'selected_icir': 0.8,      # ICIR > 0.8
-    'selected_rank': 0.7,      # 排名在前70%（rank_percentile < 0.7）
-    
-    # 没选中因子标准（非常严格）
-    'unselected_icir': 1.5,    # ICIR > 1.5（几乎2倍于选中标准）
-    'unselected_corr': 0.6,    # 与选中因子平均相关性 < 0.6
-}
-```
+- 选中 success: `alpha += bayesian.update_rules.selected_success`（默认 +1.0）
+- 选中 failure: `beta += bayesian.update_rules.selected_failure`（默认 +1.0）
+- 未选中 success: `alpha += bayesian.update_rules.unselected_success`（默认 +0.5）
+- 未选中 failure: `beta += bayesian.update_rules.unselected_failure`（默认 +0.0）
+- 未选中 `NEUTRAL/UNCERTAIN`: 不更新
 
-#### 2.1.3 时间窗口
-```python
-'time_windows': {
-    'recent_performance': 3,  # 近期表现回看期数
-}
-```
+## 3. 默认参数（当前配置）
 
-## 三、核心函数与算法
+### 3.1 时间窗口
+- 选择窗口: 5/20/60
+- 评估窗口:
+- selected: 10/20
+- unselected: 20/40
+- 数据集切分参数:
+- `TRAIN_RATIO`（默认 0.7）
+- `VALIDATION_RATIO`（默认 0.2）
+- `TEST_RATIO`（默认 0.1，可设为0）
+- 指标共享窗口参数:
+- `ROLLING_WINDOW`（前瞻窗口n天，`x(t)->R(t+1->t+n)`，IC与LS共用）
+- 年化参数:
+- `ANNUAL_DAYS`（默认250）
+- 评估模式参数:
+- `EVAL_MODE`: `strict_holdout` 或 `walk_forward_test`
+- 轮次参数:
+- `NUM_TEST_ROUNDS`: 若为 `None`，迭代直到目标区间结束
 
-### 3.1 因子选择 (`select_factors()`)
+### 3.2 选择指标权重
+- `icir: 0.4`
+- `ls_return: 0.3`
+- `rank_percentile: 0.2`
+- `stability: 0.1`
 
-#### 算法流程：
-1. **贝叶斯得分计算**：
-   ```python
-   bayesian_score = np.random.beta(factor.alpha, factor.beta)
-   ```
-   - 函数：`np.random.beta(alpha, beta)`
-   - 原理：Thompson Sampling，从后验Beta分布采样
-   - 权重：0.7
+### 3.3 成功阈值
+- selected:
+- `icir: 0.8`
+- `rank_percentile: 0.7`
+- `win_rate: 0.55`
+- unselected:
+- `icir: 1.5`
+- `rank_percentile: 0.5`
+- `win_rate: 0.60`
+- `max_correlation: 0.6`
 
-2. **近期表现得分计算**：
-   ```python
-   recent_icir = factor.get_recent_icir(lookback=3)
-   recent_score = self._normalize_icir_score(recent_icir)
-   ```
-   - 函数：`factor.get_recent_icir()` → 取最近3期ICIR均值
-   - 归一化：`_normalize_icir_score(icir)` → `min(max(icir/3.0, 0.0), 1.0)`
-   - 权重：0.3
+## 4. 跟踪与评估输出标准（新增）
 
-3. **综合得分**：
-   ```python
-   total_score = 0.7 * bayesian_score + 0.3 * recent_score
-   ```
+模块: `src/evaluation/library_tracker.py`
 
-### 3.2 选中因子成功评估 (`_evaluate_selected_success()`)
+### 4.1 轮次级输出
+- 文件: `round_summary.csv`
+- 关键字段:
+- `selected_good/selected_medium/selected_bad`
+- `selected_success_good/selected_success_medium/selected_success_bad`
+- `selected_failure_*`
+- `unselected_success_total/unselected_failure_total`
 
-#### 评估标准：
-```python
-success = (
-    icir > 0.8 and                # ICIR阈值
-    rank_percentile < 0.7         # 排名阈值
-)
-```
+### 4.2 因子级输出
+- 文件: `factor_round_status.csv`
+- 关键字段:
+- 状态: `selected`, `selected_success`, `unselected_evaluation`
+- 分数: `score_final`, `score_aggregate`, `score_bayesian`
+- 参数: `alpha_before`, `beta_before`, `alpha_after`, `beta_after`
+- 统计: `recent_icir_lookback`, `recent_ls_*`, `recent_win_rate_lookback`
 
-#### 参数说明：
-- `icir`: 当期ICIR（从`performance_data`获取）
-- `rank_percentile`: 排名百分位（0-1，越小越好）
-- 逻辑：**AND**关系，必须同时满足
+### 4.3 全库级输出
+- 文件: `library_metrics.json`
+- 关键对象:
+- `all_factors`: ICIR/LS 分布统计
+- `selected_factors`: ICIR/LS 分布统计
 
-#### 更新规则：
-- 成功：`alpha += 1`
-- 失败：`beta += 1`
+### 4.4 最终因子库输出
+- 文件: `final_library.json`
+- 关键字段:
+- `early_stop`（是否触发、触发轮次）
+- `final_library`（最终库日期、规模、因子ID列表）
+- `oos_metrics_by_round`（每轮C类指标与稳定性指标）
 
-### 3.3 没选中因子成功评估 (`_evaluate_unselected_success()`)
+### 4.5 稳定性实验附加输出（长周期实验）
+- 文件目录: `outputs/performance_tracking/<run_tag>/stability_experiment/`
+- `stability_convergence.svg`:
+- 曲线面板包括 `turnover/overlap`、`oos_sharpe/oos_icir`、`oos_ls_mean`、`convergence_index`
+- `stability_report_*.json`:
+- 包含上述曲线原始时序，及 `selected_good/medium/bad`、`selected_success_total` 等结构字段
+- `convergence_index` 口径:
+- 将早停各条件转为归一化尺度后取最大值（<=1 表示该轮达到或接近单轮早停阈值）
 
-#### 评估标准（三重过滤）：
-1. **ICIR过滤**：
-   ```python
-   recent_icir = factor.get_recent_icir()  # 最近3期均值
-   if recent_icir < 1.5: return False
-   ```
+### 4.6 验证集动态曲线输出（引擎自动）
+- 文件: `validation_dynamics.svg`
+- 维度:
+- Validation OOS: `oos_sharpe`, `oos_icir`
+- 稳定性: `turnover`, `oos_excess_vs_prevlib`
+- 变化幅度: `|Δoos_sharpe|`, `|Δoos_icir|`
+- 图上标识:
+- 绿色空心点：`stability_pass=True` 的轮次
+- 橙色实心点：最终出库轮次
 
-2. **相关性过滤**：
-   ```python
-   avg_correlation = self._estimate_average_correlation(factor, selected_ids)
-   if avg_correlation > 0.6: return False
-   ```
+### 4.7 测试集动态曲线输出（引擎自动）
+- 文件: `test_dynamics.svg`（仅 `TEST_RATIO>0` 时输出）
+- 维度:
+- `test_oos_icir`
+- `test_oos_sharpe`（基于多空收益序列的Sharpe）
+- `test_oos_ls_mean`（test rtn）
+- 图上标识:
+- 绿色空心点：`stability_pass=True` 的轮次（与Validation判据一致）
+- 橙色实心点：最终出库轮次
+- 蓝色方块：最后一轮轮次
 
-3. **边际贡献过滤**：
-   ```python
-   marginal_improvement = self._simulate_marginal_improvement(factor, selected_ids)
-   if marginal_improvement <= 0: return False
-   ```
+### 4.8 轮次紧凑小表（CSV）
+- 文件: `round_compact_summary.csv`
+- 关键字段:
+- `stability_pass`
+- `is_selected_round`（最终出库轮次）
+- `is_last_round`（最后一轮对照）
+- `oos_icir/oos_sharpe/oos_ls_rtn`
+- `test_oos_icir/test_oos_sharpe/test_oos_ls_rtn`
+- `test_oos_icir_pct/test_oos_sharpe_pct/test_oos_ls_rtn_pct`（各轮test指标分位点）
 
-#### 模拟函数说明：
-- `_estimate_average_correlation()`: **随机模拟**（MVP简化）
-  - 范围：0.2-0.8
-  - 固定随机种子：`hash(factor.id) % 1000`
-  
-- `_simulate_marginal_improvement()`: **启发式模拟**
-  ```python
-  marginal_improvement = recent_icir * (1 - avg_corr) * 0.1
-  ```
+## 5.1 年化口径（当前实现）
+- 设 `n = ROLLING_WINDOW`，`A = ANNUAL_DAYS`，`ppy = A / n`
+- `LS_rtn_annual = mean(LS_period_return) * ppy`
+- `Sharpe_annual = (mean/std)_period * sqrt(ppy)`
+- `ICIR_annual = (mean(IC)/std(IC)) * sqrt(ppy)`
+- 注：稳定性判据中的 `ΔSharpe/ΔICIR` 使用未年化原始值，避免阈值失真。
 
-#### 更新规则：
-- 成功：`alpha += 1`（只增加α，不轻易惩罚）
-- 失败：**不更新**（保持原参数）
+## 5. OOS与早停（当前测试入口实现）
 
-### 3.4 归一化函数 (`_normalize_icir_score()`)
+- OOS窗口: 固定 validation 区间（由 `TRAIN_RATIO/VALIDATION_RATIO/TEST_RATIO` 切分）
+- `strict_holdout`: 固定validation区间
+- `walk_forward_test`: 滚动未来 `OOS_HORIZON`，并迭代到test末尾（或val末尾）
+- 每轮记录:
+- `oos_ic_mean/oos_icir/oos_ls_mean/oos_sharpe/oos_win_rate`
+- `overlap_prev/turnover`
+- `oos_excess_vs_prevlib`
+- 早停判据:
+- 连续 `m=3` 轮满足
+- `turnover <= 0.15`
+- `|Δoos_sharpe| <= 0.05`
+- `|Δoos_icir| <= 0.05`
+- `oos_excess_vs_prevlib >= -0.02`
+- 最终因子库规则:
+- `strict_holdout`:
+- 先计算每轮 `stability_pass`（由turnover/Δsharpe/Δicir/excess阈值判定）
+- 在 `stability_pass=True` 轮次里取 Validation 最优 `S_r`
+- 若无通过轮次，回退到全轮次 Validation 最优 `S_r`
+- 同时输出“最后一轮库”作为对照
+- `walk_forward_test`:
+- 触发早停时：取触发轮因子库
+- 未触发时：取最后一轮因子库
 
-#### 算法：
-```python
-def _normalize_icir_score(self, icir: float) -> float:
-    return min(max(icir / 3.0, 0.0), 1.0)
-```
+## 6. 模拟数据评价口径（测试专用）
 
-#### 设计决策：
-- 线性归一化：ICIR=3.0时得1.0
-- 截断处理：确保结果在[0,1]区间
-- 后续可优化：sigmoid函数、对数变换等
+- `good/medium/bad` 标签仅用于模拟数据真值对照，不用于真实市场评价。
+- 当前模拟生成机制：
+- 每个因子有长期锚定分类（good/medium/bad）
+- 每期潜在状态可在三态间切换，状态决定当期IC参数
+- 可选分阶段转移矩阵：
+- `PHASE_TRANSITION_PROBS` 可按 `train/validation/test` 配置不同转移概率
+- 因此“长期可区分 + 短期会波动”，用于检验因子库逻辑是否能处理有效性变化。
+- 代码位置：`src/simulation/latent_factor_data_simulator.py`（已从 tests 目录抽离）
+- 对照实验入口：`src/tests/experiment_phase_regime_comparison.py`
 
-## 四、默认值与假设
+## 7. 变更同步要求
+若出现以下变更，必须同步维护本文档:
+- 成功判定逻辑变更
+- 阈值/权重/窗口参数变更
+- 跟踪输出字段变更
+- 选择或更新流程变更
+- 模拟数据机制变更（状态模型/参数映射）
 
-### 4.1 贝叶斯先验
-```python
-alpha = 1.0  # 初始成功次数
-beta = 1.0   # 初始失败次数
-```
-- 等价于：`Beta(1,1)` = `Uniform(0,1)`
-- 无信息先验，完全由数据驱动
+同时必须同步更新:
+- `docs/CODE_ARCHITECTURE.md`
+- `docs/ITERATION3_SUMMARY.md`
 
-### 4.2 近期表现默认值
-```python
-def get_recent_icir(self, lookback: int = 3) -> float:
-    if not self.performance:
-        return 1.0  # 默认值
-```
-- 无历史数据时：返回1.0（中性假设）
-
-### 4.3 性能数据默认值
-```python
-performance_data.get(fid, {})
-icir = perf.get('icir', 0)           # 默认0
-rank = perf.get('rank_percentile', 1.0)  # 默认1.0（最差）
-```
-
-## 五、与AlphaPROBE的对比
-
-### 5.1 相同点
-1. **Thompson Sampling核心**：都使用`Beta(α,β)`分布采样
-2. **贝叶斯更新框架**：基于成功/失败更新α,β参数
-3. **多标准评价**：考虑多个维度（ICIR、排名等）
-
-### 5.2 不同点（我们的创新）
-| 维度 | AlphaPROBE | 我们的实现 |
-|------|-----------|-----------|
-| **没选中因子评估** | 未明确提及 | 专门设计边际贡献法 |
-| **评价标准区分** | 可能统一标准 | 明确三套不同标准 |
-| **相关性考虑** | DAG结构考虑 | 简单相关性阈值 |
-| **边际贡献模拟** | 未明确提及 | 启发式模拟实现 |
-
-### 5.3 参数差异
-- **ICIR阈值**：我们区分选中(0.8)和没选中(1.5)
-- **排名阈值**：我们使用0.7（前70%）
-- **相关性阈值**：我们设定0.6（没选中因子）
-
-## 六、待优化问题
-
-### 6.1 硬编码参数
-- 所有阈值和权重都是硬编码
-- 缺乏自适应学习机制
-
-### 6.2 简化模拟
-- 相关性估计：随机模拟，非真实计算
-- 边际贡献：启发式公式，非真实组合模拟
-
-### 6.3 时间窗口固定
-- 近期表现：固定3期
-- 缺乏多时间尺度融合
-
-### 6.4 归一化函数简单
-- 线性归一化可能不合理
-- 未考虑ICIR分布特性
-
-## 七、迭代建议
-
-### 7.1 短期优化（迭代3）
-1. **实现真实相关性计算**
-2. **改进边际贡献模拟**
-3. **参数可配置化**
-
-### 7.2 中期优化
-1. **自适应阈值学习**
-2. **多时间窗口融合**
-3. **非线性归一化函数**
-
-### 7.3 长期优化
-1. **集成真实数据接口**
-2. **考虑因子交互效应**
-3. **实现多样性控制**
-
-## 八、测试验证
-
-### 8.1 当前测试结果
-```
-好因子平均成功率: 0.921
-差因子平均成功率: 0.381
-差异: 0.539 (显著)
-```
-
-### 8.2 参数敏感性
-需要测试：
-1. 权重比例(0.7/0.3)的影响
-2. ICIR阈值(0.8/1.5)的影响
-3. 相关性阈值(0.6)的影响
-
----
-
-**文档版本**: 1.0  
-**更新日期**: 2026-03-01  
-**对应代码版本**: MVP版本 (commit: 012710f)  
-**下一步**: 迭代3 - 边际贡献评估系统实现
+补充:
+- 多场景对比会导出 `scenario_comparison_summary_<timestamp>.csv`
+- 字段包含 `avg_oos_ls_rtn`（平均多空收益率）与最终Validation/Test指标
+- 实验入口支持规模参数覆盖：
+- `num_stocks / num_factors / target_size / num_days`
+- `experiment_phase_regime_comparison` 入口新增 `seed` 参数用于可重复实验

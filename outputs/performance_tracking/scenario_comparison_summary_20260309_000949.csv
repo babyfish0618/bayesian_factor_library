@@ -1,0 +1,2 @@
+scenario,eval_mode,transition_good_to_good,stock_return_sigma,avg_good_selection_rate,avg_good_recall,avg_update_success_rate,avg_oos_ls_rtn,final_val_icir,final_val_sharpe,final_test_icir,final_test_sharpe
+stationary_baseline,strict_holdout,0.72,0.0025,0.5499999999999999,0.8250000000000001,0.6333333333333333,0.03219022383889701,8.022520144038989,8.014907574577085,7.983458420791133,7.985235383598218

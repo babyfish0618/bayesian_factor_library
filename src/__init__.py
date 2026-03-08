@@ -2,22 +2,22 @@
 贝叶斯因子库维护系统
 """
 
-# 导出核心类
-from .core.mvp_selector import Factor, MVPBayesianSelector
-from .core.integrated_selector import IntegratedBayesianSelector
-from .simulation.stock_simulator import ProperStockSimulator
+# 导出当前主链路核心类
+from .core.bayesian_selector_v2 import BayesianSelectorV2
+from .core.factor_enhanced import EnhancedFactor, FactorPerformance
+from .simulation.latent_factor_data_simulator import (
+    LatentFactorDataSimulator,
+    LatentFactorSimulationConfig,
+)
 
 __version__ = "1.0.0"
 __author__ = "小鱼爬爬量化研究助手"
 __description__ = "贝叶斯因子库维护系统 - 从AlphaPROBE抽取的贝叶斯检索器模块"
 
-# 简化导入
-StockSimulator = ProperStockSimulator  # 别名
-
 __all__ = [
-    "Factor",
-    "MVPBayesianSelector", 
-    "IntegratedBayesianSelector",
-    "ProperStockSimulator",
-    "StockSimulator"
+    "BayesianSelectorV2",
+    "EnhancedFactor",
+    "FactorPerformance",
+    "LatentFactorDataSimulator",
+    "LatentFactorSimulationConfig",
 ]

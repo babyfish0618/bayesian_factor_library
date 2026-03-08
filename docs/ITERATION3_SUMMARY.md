@@ -1,251 +1,141 @@
-# 迭代3总结：多指标多时间窗口评价系统
+# 迭代3总结（当前落地版本）
 
 ## 概述
-迭代3成功实现了完整的多指标多时间窗口评价系统，完全替代了原有的MVP版本。系统现在支持真实相关性计算、边际贡献评估和配置文件管理。
+迭代3已落地为“多指标 + 多时间窗口 + 边际贡献评估 + 全量跟踪输出”的闭环框架。
 
-## 完成时间
-2026-03-01
+更新时间: 2026-03-07
 
-## 完成内容
+## 当前能力
 
-### ✅ 任务1：配置系统
-**文件**: `config/evaluation_config.yaml`, `src/utils/config_manager.py`
-**功能**:
-- YAML配置文件管理
-- 多时间窗口配置 (选择/评估不同窗口)
-- 多指标权重配置 (ICIR/收益/排名/稳定性)
-- 成功阈值配置 (区分选中/没选中)
-- 贝叶斯参数配置
-- 配置验证和热更新
+### 1. 因子选择（Top-K）
+- 模块: `src/core/bayesian_selector_v2.py`
+- 公式:
+- `final_score = 0.7 * aggregate_score + 0.3 * bayesian_score`
+- `bayesian_score` 来自 `Beta(alpha, beta)` 采样（Thompson Sampling）
+- 对全体候选按 `final_score` 排序取 Top-K（不是只看打印的前几个）
 
-### ✅ 任务2：增强版因子类
-**文件**: `src/core/factor_enhanced.py`
-**功能**:
-- 多指标存储 (IC, ICIR, 多空收益, 排名等)
-- 多时间窗口分析 (5/20/60天)
-- **正确ICIR计算**: `ICIR = mean(IC) / std(IC)`
-- 综合得分计算 (多窗口多指标加权)
-- 贝叶斯参数管理
+### 2. 选中因子更新
+- 模块: `BayesianSelectorV2._evaluate_selected_success`
+- success 条件（AND）:
+- `icir > 0.8`
+- `ls_sharpe > 0`
+- `rank_percentile < 0.7`
+- `win_rate > 0.55`
+- 更新权重（默认）:
+- success: `alpha += 1.0`
+- failure: `beta += 1.0`
 
-### ✅ 任务3：相关性计算模块
-**文件**: `src/core/correlation_calculator.py`
-**功能**:
-- 支持多种相关性方法 (Pearson/Spearman/Kendall)
-- 计算因子间的成对相关性 (含p值和显著性)
-- 计算完整的相关性矩阵
-- 计算滚动窗口相关性
-- 处理缺失值和不同长度序列
-- 保存和加载相关性矩阵
+### 3. 未选中因子更新（边际贡献）
+- 模块: `src/evaluation/marginal_contrib.py`
+- 输出分类: `SUCCESS/FAILURE/NEUTRAL/UNCERTAIN`
+- 判定核心:
+- SUCCESS: `score >= 0.7` 且 `improvement > 0` 且 `max_correlation <= 0.6`
+- FAILURE: `score < 0.3` 或 `improvement < -0.1` 或 `max_correlation > 0.72`
+- 更新权重（默认）:
+- unselected success: `alpha += 0.5`
+- unselected failure: `beta += 0.0`（通常不惩罚）
 
-### ✅ 任务4：组合模拟模块
-**文件**: `src/evaluation/portfolio_simulator.py`
-**功能**:
-- 多种组合构建方法:
-  - 等权组合 (equal_weight)
-  - ICIR加权组合 (icir_weighted)
-  - 夏普优化组合 (sharpe_optimized)
-  - 风险平价组合 (risk_parity)
-  - 最小方差组合 (min_variance)
-- 多种因子替换策略:
-  - 基于相关性替换 (correlation_based)
-  - 基于有效性替换 (effectiveness_based)
-  - 组合优化替换 (portfolio_optimization)
-- 完整的组合表现评估
+### 4. 因子库跟踪与导出（新增）
+- 模块: `src/evaluation/library_tracker.py`
+- 接入: `src/tests/test_performance.py`
+- 每轮新增可见输出:
+- `选中结构: good/medium/bad`
+- `选中成功结构: good/medium/bad`
+- 导出文件:
+- `outputs/performance_tracking/<run_tag>/round_summary.csv`
+- `outputs/performance_tracking/<run_tag>/factor_round_status.csv`
+- `outputs/performance_tracking/<run_tag>/library_metrics.json`
+- `outputs/performance_tracking/<run_tag>/final_library.json`
 
-### ✅ 任务5：边际贡献评估模块
-**文件**: `src/evaluation/marginal_contrib.py`
-**功能**:
-- 集成相关性计算和组合模拟
-- 多维度评分系统:
-  - 边际改善得分 (40%): 夏普比率改善
-  - 相关性得分 (30%): 与选中因子相关性
-  - 因子质量得分 (20%): ICIR和夏普比率
-  - 替换可行性得分 (10%): 是否可替换
-- 评估结果分类:
-  - SUCCESS: 应该被选中
-  - FAILURE: 不应该被选中
-  - NEUTRAL: 保持现状
-  - UNCERTAIN: 数据不足
-- 批量评估和摘要统计
+### 5. 模拟数据机制（更新）
+- 模块: `src/simulation/latent_factor_data_simulator.py`
+- 设计:
+- 保留长期分类标签（good/medium/bad）
+- 引入按期潜在状态（good/medium/bad）切换
+- 通过“锚定回归 + 状态转移”让因子有效性随时间波动
+- 目的:
+- 避免“好因子永远好”的过度理想化假设
+- 在可控复杂度下检验因子库迭代逻辑的鲁棒性
 
-### ✅ 任务6：新版贝叶斯选择器 (V2)
-**文件**: `src/core/bayesian_selector_v2.py`
-**功能**:
-- 集成所有新模块 (配置管理、增强因子、相关性计算、边际评估)
-- 多时间窗口多指标选择:
-  - 综合得分 = 多窗口多指标得分 × 0.7 + 贝叶斯得分 × 0.3
-  - Thompson Sampling选择机制
-- 集成边际贡献评估的更新逻辑:
-  - 选中因子: 基于实际表现更新
-  - 没选中因子: 基于边际贡献评估更新
-- 完整的生命周期管理:
-  - 因子管理、选择历史、更新历史
-  - 状态保存和加载
-  - 统计和监控
+### 6. 因子库迭代逻辑（更新）
+- 每轮 C 类样本外评估改为固定 validation 集评估（不参与更新）：
+- `oos_icir`, `oos_ls_mean`, `oos_sharpe`, `oos_win_rate`
+- 每轮新增稳定性指标：
+- `overlap_prev`, `turnover`, `oos_excess_vs_prevlib`
+- 引入早停判据（连续窗口）用于“收敛出库”：
+- 满足阈值则提前停止迭代并固化当轮因子库
+- 最终因子库固化规则：
+- 早停触发 -> 取触发轮
+- 未触发 -> 取最后一轮
+- 数据切分参数支持：
+- `TRAIN_RATIO / VALIDATION_RATIO / TEST_RATIO`（测试集可为0）
+- 评估模式支持：
+- `strict_holdout` 与 `walk_forward_test`
+- 当 `NUM_TEST_ROUNDS=None` 时，迭代可自动跑到目标区间末尾（非固定24轮）
+- `strict_holdout` 出库策略升级：
+- 不做早停截断训练；按每轮 `stability_pass` 筛选后取 Validation 最优 `S_r`
+- 并输出最后一轮 `S_T` 作为对照
+- `walk_forward_test` 仍保留早停策略
 
-## 技术架构
+### 7. 架构分层（更新）
+- `src/tests/test_performance.py` 仅保留实验入口职责
+- `src/tests/experiment_stability_early_stop.py` 作为长周期稳定性实验入口
+- `src/tests/experiment_phase_regime_comparison.py` 作为分阶段状态转移对照实验入口
+- 两个入口均支持核心规模参数覆盖：
+- `num_stocks / num_factors / target_size / num_days`
+- 可复用流程类已抽离：
+- `src/workflows/factor_library_iteration_engine.py`（单场景迭代引擎）
+- `src/experiments/factor_library_scenario_experiment.py`（多场景对比）
+- `src/experiments/factor_library_stability_experiment.py`（稳定性收敛实验与可视化）
+- 模拟数据逻辑位于：
+- `src/simulation/latent_factor_data_simulator.py`
+- 历史MVP模块已归档至：
+- `src/core/__archive/`
+- `src/simulation/__archive/`
 
-### 新的目录结构
-```
-src/
-├── core/                          # 核心算法
-│   ├── factor_enhanced.py         # 增强版因子类 ✓
-│   ├── correlation_calculator.py  # 相关性计算 ✓
-│   ├── bayesian_selector_v2.py    # 新版选择器 ✓
-│   ├── mvp_selector.py           # 旧版MVP (保留)
-│   └── integrated_selector.py    # 旧版集成 (保留)
-├── evaluation/                    # 评估系统
-│   ├── portfolio_simulator.py    # 组合模拟 ✓
-│   └── marginal_contrib.py       # 边际贡献评估 ✓
-├── utils/                        # 工具函数
-│   └── config_manager.py         # 配置管理器 ✓
-└── tests/                        # 测试代码
-```
+### 8. 稳定性可视化输出（新增）
+- 长周期实验会额外导出：
+- `stability_convergence.svg`
+- `stability_report_*.json`
+- 核心观察维度：
+- 因子库稳定性：`overlap_prev`, `turnover`
+- 样本外表现：`oos_sharpe`, `oos_icir`, `oos_ls_mean`
+- 收敛信号：`convergence_index`（按早停条件归一化）
+- 引擎自动输出 `validation_dynamics.svg`：
+- 标注 `stability_pass` 轮次与最终出库轮次，便于观察训练结束后验证指标动态。
+- 引擎可输出 `test_dynamics.svg`（当存在test集）：
+- 显示每轮 test 的 `ICIR/Sharpe/rtn` 轨迹，并标注最终与最后一轮。
+- 引擎可输出 `round_compact_summary.csv`：
+- 每轮验证/测试关键指标 + `stability_pass` + 最终/最后轮次标记。
 
-### 配置体系
-```yaml
-# 核心配置项:
-time_windows:
-  selection: {short_term: 5, medium_term: 20, long_term: 60}
-  evaluation: {selected_short: 10, selected_long: 20, unselected_short: 20, unselected_long: 40}
+### 9. 多空收益口径（更新）
+- 模拟中的因子多空收益不再使用 `topq-bottomq`。
+- 采用因子加权多空：
+- 多头权重 `w+ ∝ max(x,0)`，空头权重 `w- ∝ max(-x,0)`
+- 归一化后满足 `sum(w+)=1`、`sum(w-)=1`（总杠杆2x）
 
-indicator_weights:
-  selection: {icir: 0.4, ls_return: 0.3, rank_percentile: 0.2, stability: 0.1}
+## 本轮（2026-03-07）关键修订
+- 新增 `FactorLibraryTracker`，支持“轮次级 + 因子级 + 全库级”三层跟踪。
+- `UpdateResult` 新增 `marginal_details`，保存未选中因子边际评估明细。
+- `test_performance.py` 已接入跟踪模块并自动导出输出文件。
+- 文档中的 success 规则统一为当前代码逻辑（选中因子条件含 `sharpe > 0`，而非年化收益阈值）。
 
-success_thresholds:
-  selected: {icir: 0.8, ls_return_annual: 0.05, rank_percentile: 0.7, win_rate: 0.55}
-  unselected: {icir: 1.5, ls_return_annual: 0.10, rank_percentile: 0.5, win_rate: 0.60, max_correlation: 0.6}
-```
+## 结果解读口径
+- 若看到“前5个选中因子几乎都是 good”，只是展示片段。
+- 应以 `round_summary.csv` 的 `selected_good/selected_medium/selected_bad` 为每轮真实结构口径。
+- 单因子逐轮状态与统计值以 `factor_round_status.csv` 为准。
 
-### 评价标准体系 (更新)
+## 维护约束
+未来若发生架构、阈值、参数、输出字段变化，必须同步更新:
+- `docs/CODE_ARCHITECTURE.md`
+- `docs/EVALUATION_STANDARDS.md`
+- `docs/ITERATION3_SUMMARY.md`
 
-#### 1. 采样打分标准 (选择时使用)
-```
-综合得分 = 多窗口多指标得分 × 0.7 + 贝叶斯得分 × 0.3
+评估流程与早停规范见:
+- `docs/FACTOR_LIBRARY_EVAL_PROTOCOL.md`
 
-多窗口多指标得分:
-- 时间窗口: 短期(5天,0.3) + 中期(20天,0.4) + 长期(60天,0.3)
-- 指标权重: ICIR(0.4) + 多空收益(0.3) + 排名(0.2) + 稳定性(0.1)
-```
-
-#### 2. 判断成功-选中因子 (更新参数)
-```python
-success = (
-    icir > 0.8 and                    # ICIR阈值
-    annual_ls_return > 0.05 and       # 年化收益 > 5%
-    rank_percentile < 0.7 and         # 排名前70%
-    win_rate > 0.55                   # 胜率 > 55%
-)
-```
-
-#### 3. 判断成功-没选中因子 (边际贡献法)
-```python
-# 基于边际贡献评估
-if marginal_evaluation == SUCCESS:
-    # 成功：应该被选中但没选中
-    update_weight = 0.5  # 谨慎更新
-elif marginal_evaluation == FAILURE:
-    # 失败：确实不应该被选中  
-    update_weight = 0.0  # 不更新
-```
-
-## 与MVP版本的对比
-
-| 维度 | MVP版本 | 迭代3版本 (V2) |
-|------|---------|---------------|
-| **因子数据结构** | 简化字段 | 多指标存储，时间序列 |
-| **ICIR计算** | 近似计算 | `ICIR = mean(IC) / std(IC)` |
-| **相关性计算** | 随机模拟 | 基于真实时间序列 |
-| **时间窗口** | 固定3期 | 多尺度 (5/20/60天) |
-| **评价指标** | 仅ICIR | ICIR + 多空收益 + 排名 + 稳定性 |
-| **边际贡献** | 启发式模拟 | 真实组合模拟 + 替换策略 |
-| **配置管理** | 硬编码 | YAML配置文件 |
-| **更新逻辑** | 简单成功/失败 | 集成边际贡献评估 |
-
-## 测试验证
-
-### 单元测试
-每个模块都有完整的测试函数：
-- ✅ `factor_enhanced.py`: 测试多窗口统计和ICIR计算
-- ✅ `correlation_calculator.py`: 测试相关性计算和矩阵
-- ✅ `portfolio_simulator.py`: 测试组合构建和边际评估
-- ✅ `marginal_contrib.py`: 测试边际贡献评估流程
-- ✅ `bayesian_selector_v2.py`: 测试完整的选择和更新流程
-
-### 集成测试
-```bash
-# 运行新版选择器测试
-python3 src/core/bayesian_selector_v2.py
-
-# 运行边际贡献评估测试  
-python3 src/evaluation/marginal_contrib.py
-
-# 运行组合模拟测试
-python3 src/evaluation/portfolio_simulator.py
-```
-
-## 性能优化
-
-### 缓存机制
-- 因子多窗口统计缓存
-- 相关性计算结果缓存
-- 边际贡献评估结果缓存
-
-### 向量化计算
-- 使用numpy进行批量计算
-- 避免Python循环中的重复计算
-
-### 配置驱动
-- 所有参数可配置，无需修改代码
-- 支持不同场景的参数调优
-
-## 下一步计划
-
-### 短期优化
-1. **性能测试**: 大规模因子库下的性能评估
-2. **参数调优**: 基于历史数据的参数优化
-3. **实时监控**: 添加运行时的性能监控
-
-### 中期扩展
-1. **实时数据接口**: 集成真实市场数据
-2. **分布式计算**: 支持大规模因子计算
-3. **Web界面**: 可视化配置和监控
-
-### 长期愿景
-1. **生产部署**: 完整的量化因子管理系统
-2. **API服务**: 提供因子选择和管理API
-3. **生态扩展**: 支持插件式因子开发和评估
-
-## 代码质量
-
-### 代码统计
-```
-总文件数: 6个新文件
-总代码行数: ~8,000行
-测试覆盖率: 每个模块都有完整测试
-文档完整性: 所有模块都有详细文档
-```
-
-### 代码规范
-- PEP 8代码风格
-- 类型注解 (Type Hints)
-- 完整的文档字符串
-- 错误处理和日志记录
-
-## 总结
-
-迭代3成功实现了从MVP到生产就绪系统的升级。新系统具有以下优势：
-
-1. **科学性**: 基于真实数据的量化评估，不再是随机模拟
-2. **灵活性**: 可配置的参数体系，适应不同场景
-3. **完整性**: 从因子选择到参数更新的完整闭环
-4. **可扩展性**: 模块化设计，便于功能扩展
-5. **可维护性**: 清晰的代码结构和完整文档
-
-系统现在已准备好用于实际的因子库维护和管理任务。
-
----
-**文档版本**: 1.0  
-**更新日期**: 2026-03-01  
-**对应代码版本**: 迭代3完成版  
-**下一步**: 性能测试和参数调优
+补充:
+- 协议已升级至 Draft v2，明确目标时序为:
+- `Observe/Update(基于新观测) -> Select -> Validate`
+- 后续代码改造应按该时序对齐，确保不存在未来数据泄露。
+- 信号收益配对按 `x(t)` -> `R(t+1->t+n)`（不含t当日收益）。

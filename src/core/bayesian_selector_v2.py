@@ -32,6 +32,7 @@ class UpdateResult:
     date: str                              # 更新日期
     selected_updates: Dict[str, bool]      # 选中因子更新结果 {factor_id: success}
     unselected_updates: Dict[str, bool]    # 没选中因子更新结果
+    marginal_details: Dict[str, Dict] = field(default_factory=dict)  # 没选中因子边际评估详情
     update_stats: Dict = field(default_factory=dict)  # 更新统计
 
 
@@ -46,13 +47,16 @@ class BayesianSelectorV2:
     5. 完整的贝叶斯更新逻辑
     """
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, verbose: bool = True):
         """
         初始化新版选择器
         
         参数：
             config_path: 配置文件路径
+            verbose: 是否输出过程日志
         """
+        self.verbose = verbose
+
         # 加载配置
         self.config_manager = ConfigManager()
         if config_path:
@@ -79,8 +83,9 @@ class BayesianSelectorV2:
         self.update_history: List[UpdateResult] = []  # 更新历史
         self.performance_cache: Dict = {}  # 表现缓存
         
-        print(f"新版贝叶斯选择器初始化完成")
-        print(f"配置版本: {self.config.version}")
+        if self.verbose:
+            print(f"新版贝叶斯选择器初始化完成")
+            print(f"配置版本: {self.config.version}")
     
     def add_factor(self, factor: EnhancedFactor):
         """添加因子"""
@@ -105,8 +110,9 @@ class BayesianSelectorV2:
         if target_size is None:
             target_size = len(self.factors) // 3  # 默认选择1/3
         
-        print(f"[{current_date}] 开始选择因子，目标数量: {target_size}")
-        print(f"  候选因子数: {len(self.factors)}")
+        if self.verbose:
+            print(f"[{current_date}] 开始选择因子，目标数量: {target_size}")
+            print(f"  候选因子数: {len(self.factors)}")
         
         # 1. 计算所有因子的综合得分
         candidate_scores = self._calculate_factor_scores(current_date)
@@ -128,9 +134,10 @@ class BayesianSelectorV2:
         
         self.selection_history.append(result)
         
-        print(f"[{current_date}] 选择完成，选中 {len(selected_ids)} 个因子")
-        if selected_ids:
-            print(f"  前5个选中因子: {selected_ids[:5]}")
+        if self.verbose:
+            print(f"[{current_date}] 选择完成，选中 {len(selected_ids)} 个因子")
+            if selected_ids:
+                print(f"  前5个选中因子: {selected_ids[:5]}")
         
         return result
     
@@ -148,8 +155,9 @@ class BayesianSelectorV2:
             performance_data: 表现数据 {factor_id: {指标: 值}}
             current_date: 当前日期
         """
-        print(f"[{current_date}] 开始更新贝叶斯参数")
-        print(f"  选中因子数: {len(selected_ids)}")
+        if self.verbose:
+            print(f"[{current_date}] 开始更新贝叶斯参数")
+            print(f"  选中因子数: {len(selected_ids)}")
         
         # 准备选中因子对象
         selected_factors = [self.factors[fid] for fid in selected_ids if fid in self.factors]
@@ -165,6 +173,7 @@ class BayesianSelectorV2:
         
         selected_updates = {}
         unselected_updates = {}
+        marginal_details = {}
         
         # 1. 更新选中因子
         for fid in selected_ids:
@@ -187,7 +196,7 @@ class BayesianSelectorV2:
                 update_stats['selected_failure'] += 1
             
             # 输出调试信息
-            if list(self.factors.keys()).index(fid) < 3:  # 前3个因子
+            if self.verbose and list(self.factors.keys()).index(fid) < 3:  # 前3个因子
                 print(f"    选中因子 {fid}: 成功={success}, "
                       f"新参数: α={factor.alpha:.1f}, β={factor.beta:.1f}")
         
@@ -195,7 +204,8 @@ class BayesianSelectorV2:
         unselected_ids = [fid for fid in self.factors.keys() if fid not in selected_ids]
         
         if unselected_ids and selected_factors:
-            print(f"  评估 {len(unselected_ids)} 个没选中因子的边际贡献...")
+            if self.verbose:
+                print(f"  评估 {len(unselected_ids)} 个没选中因子的边际贡献...")
             
             # 批量评估边际贡献
             unselected_factors = [self.factors[fid] for fid in unselected_ids]
@@ -212,6 +222,7 @@ class BayesianSelectorV2:
                     continue
                 
                 factor = self.factors[fid]
+                marginal_details[fid] = result.to_dict()
                 
                 # 根据边际贡献评估结果决定是否更新
                 if result.evaluation == EvaluationResult.SUCCESS:
@@ -236,17 +247,19 @@ class BayesianSelectorV2:
             date=current_date,
             selected_updates=selected_updates,
             unselected_updates=unselected_updates,
+            marginal_details=marginal_details,
             update_stats=update_stats
         )
         
         self.update_history.append(update_result)
         
-        print(f"[{current_date}] 更新完成")
-        print(f"  选中成功: {update_stats['selected_success']}, "
-              f"选中失败: {update_stats['selected_failure']}")
-        print(f"  没选中成功: {update_stats['unselected_success']}, "
-              f"没选中失败: {update_stats['unselected_failure']}")
-        print(f"  边际贡献评估: {update_stats['marginal_evaluations']} 个因子")
+        if self.verbose:
+            print(f"[{current_date}] 更新完成")
+            print(f"  选中成功: {update_stats['selected_success']}, "
+                  f"选中失败: {update_stats['selected_failure']}")
+            print(f"  没选中成功: {update_stats['unselected_success']}, "
+                  f"没选中失败: {update_stats['unselected_failure']}")
+            print(f"  边际贡献评估: {update_stats['marginal_evaluations']} 个因子")
         
         return update_result
     

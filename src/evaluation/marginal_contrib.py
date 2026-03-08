@@ -286,6 +286,13 @@ class MarginalContributionEvaluator:
         candidate_id = factor_data['candidate']['id']
         selected_ids = list(factor_data['selected_returns'].keys())
         
+        # 组合模拟需要同时拿到候选因子和已选因子的收益/ICIR
+        all_returns = dict(factor_data['selected_returns'])
+        all_returns[candidate_id] = factor_data['candidate']['returns']
+        
+        all_icirs = dict(factor_data['selected_icirs'])
+        all_icirs[candidate_id] = factor_data['candidate']['icir']
+        
         # 获取组合方法配置
         portfolio_method = self.config['portfolio'].get('method', 'equal_weight')
         replacement_strategy = self.config['portfolio'].get('replacement_strategy', 'correlation_based')
@@ -294,8 +301,8 @@ class MarginalContributionEvaluator:
         marginal_result = self.portfolio_simulator.evaluate_marginal_contribution(
             candidate_id,
             selected_ids,
-            factor_data['selected_returns'],
-            factor_data['selected_icirs'],
+            all_returns,
+            all_icirs,
             correlation_results['correlation_matrix'],
             portfolio_method,
             replacement_strategy
@@ -357,13 +364,16 @@ class MarginalContributionEvaluator:
         
         # 1. 边际改善得分 (权重0.4)
         improvement = evaluation['improvement']
-        thresholds = self.config['thresholds']
-        
-        if improvement >= thresholds['high_improvement']:
+        thresholds = self.config.get('thresholds', {})
+        high_imp = thresholds.get('high_improvement', 0.05)
+        medium_imp = thresholds.get('medium_improvement', 0.02)
+        low_imp = thresholds.get('low_improvement', 0.01)
+
+        if improvement >= high_imp:
             improvement_score = 1.0
-        elif improvement >= thresholds['medium_improvement']:
+        elif improvement >= medium_imp:
             improvement_score = 0.7
-        elif improvement >= thresholds['low_improvement']:
+        elif improvement >= low_imp:
             improvement_score = 0.4
         else:
             improvement_score = 0.1
@@ -432,7 +442,7 @@ class MarginalContributionEvaluator:
         correlation_results: Dict
     ) -> MarginalContributionResult:
         """确定最终评估结果"""
-        thresholds = self.config['thresholds']
+        thresholds = self.config.get('thresholds', {})
         min_score = thresholds.get('min_score_for_success', 0.7)
         
         improvement = evaluation['improvement']

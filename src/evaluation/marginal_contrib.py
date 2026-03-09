@@ -84,7 +84,35 @@ class MarginalContributionEvaluator:
                 'low_improvement': 0.01,     # 低改善阈值
                 'min_score_for_success': 0.7,  # 成功最小得分
                 'max_correlation': 0.6       # 最大允许相关性
-            }
+            },
+            # 打分与决策参数（避免硬编码）
+            'scoring': {
+                'weights': {
+                    'improvement': 0.4,
+                    'correlation': 0.3,
+                    'quality': 0.2,
+                    'feasibility': 0.1,
+                },
+                'grade_scores': {
+                    'high': 1.0,
+                    'medium': 0.7,
+                    'low': 0.4,
+                    'fallback': 0.1,
+                },
+                'quality_thresholds': {
+                    'high': 2.0,
+                    'medium': 1.0,
+                    'low': 0.5,
+                },
+                'feasibility_scores': {
+                    'replace': 1.0,
+                    'no_replace': 0.3,
+                },
+                'correlation_low_ratio': 0.5,
+                'decision_failure_score': 0.3,
+                'decision_failure_improvement': -0.1,
+                'decision_corr_fail_multiplier': 1.2,
+            },
         }
         
         # 初始化子模块
@@ -195,10 +223,12 @@ class MarginalContributionEvaluator:
         lookback_days: int
     ) -> Optional[Dict]:
         """准备因子数据"""
+        min_points = int(self.config.get('correlation', {}).get('min_common_periods', 20))
+
         # 获取候选因子的近期表现
         candidate_perf = candidate_factor.get_recent_performance(lookback_days, evaluation_date)
         
-        if len(candidate_perf) < 20:  # 最少20个有效数据点
+        if len(candidate_perf) < min_points:
             return None
         
         # 提取收益序列和ICIR
@@ -213,7 +243,7 @@ class MarginalContributionEvaluator:
         for factor in selected_factors:
             factor_perf = factor.get_recent_performance(lookback_days, evaluation_date)
             
-            if len(factor_perf) >= 20:
+            if len(factor_perf) >= min_points:
                 returns = self._extract_returns(factor_perf)
                 icir = factor.calculate_icir(factor_perf)
                 
@@ -362,7 +392,27 @@ class MarginalContributionEvaluator:
         scores = []
         weights = []
         
-        # 1. 边际改善得分 (权重0.4)
+        scoring_cfg = self.config.get('scoring', {})
+        weight_cfg = scoring_cfg.get('weights', {})
+        grade_cfg = scoring_cfg.get('grade_scores', {})
+        quality_th = scoring_cfg.get('quality_thresholds', {})
+        feasibility_cfg = scoring_cfg.get('feasibility_scores', {})
+
+        w_improvement = float(weight_cfg.get('improvement', 0.4))
+        w_correlation = float(weight_cfg.get('correlation', 0.3))
+        w_quality = float(weight_cfg.get('quality', 0.2))
+        w_feasibility = float(weight_cfg.get('feasibility', 0.1))
+
+        score_high = float(grade_cfg.get('high', 1.0))
+        score_medium = float(grade_cfg.get('medium', 0.7))
+        score_low = float(grade_cfg.get('low', 0.4))
+        score_fallback = float(grade_cfg.get('fallback', 0.1))
+        corr_low_ratio = float(scoring_cfg.get('correlation_low_ratio', 0.5))
+        q_high = float(quality_th.get('high', 2.0))
+        q_medium = float(quality_th.get('medium', 1.0))
+        q_low = float(quality_th.get('low', 0.5))
+
+        # 1. 边际改善得分
         improvement = evaluation['improvement']
         thresholds = self.config.get('thresholds', {})
         high_imp = thresholds.get('high_improvement', 0.05)
@@ -370,64 +420,66 @@ class MarginalContributionEvaluator:
         low_imp = thresholds.get('low_improvement', 0.01)
 
         if improvement >= high_imp:
-            improvement_score = 1.0
+            improvement_score = score_high
         elif improvement >= medium_imp:
-            improvement_score = 0.7
+            improvement_score = score_medium
         elif improvement >= low_imp:
-            improvement_score = 0.4
+            improvement_score = score_low
         else:
-            improvement_score = 0.1
+            improvement_score = score_fallback
         
         scores.append(improvement_score)
-        weights.append(0.4)
+        weights.append(w_improvement)
         
-        # 2. 相关性得分 (权重0.3)
+        # 2. 相关性得分
         max_correlation = evaluation['max_correlation']
         max_allowed = thresholds.get('max_correlation', 0.6)
         
-        if max_correlation <= max_allowed * 0.5:
-            correlation_score = 1.0
+        if max_correlation <= max_allowed * corr_low_ratio:
+            correlation_score = score_high
         elif max_correlation <= max_allowed:
-            correlation_score = 0.6
+            correlation_score = (score_medium + score_low) / 2.0
         else:
-            correlation_score = 0.2
+            correlation_score = score_fallback * 2.0
         
         scores.append(correlation_score)
-        weights.append(0.3)
+        weights.append(w_correlation)
         
-        # 3. 候选因子质量得分 (权重0.2)
+        # 3. 候选因子质量得分
         candidate_icir = evaluation['candidate_icir']
         candidate_sharpe = evaluation['candidate_sharpe']
         
         # ICIR得分
-        if candidate_icir >= 2.0:
-            icir_score = 1.0
-        elif candidate_icir >= 1.0:
-            icir_score = 0.7
-        elif candidate_icir >= 0.5:
-            icir_score = 0.4
+        if candidate_icir >= q_high:
+            icir_score = score_high
+        elif candidate_icir >= q_medium:
+            icir_score = score_medium
+        elif candidate_icir >= q_low:
+            icir_score = score_low
         else:
-            icir_score = 0.1
+            icir_score = score_fallback
         
         # 夏普得分
-        if candidate_sharpe >= 2.0:
-            sharpe_score = 1.0
-        elif candidate_sharpe >= 1.0:
-            sharpe_score = 0.7
-        elif candidate_sharpe >= 0.5:
-            sharpe_score = 0.4
+        if candidate_sharpe >= q_high:
+            sharpe_score = score_high
+        elif candidate_sharpe >= q_medium:
+            sharpe_score = score_medium
+        elif candidate_sharpe >= q_low:
+            sharpe_score = score_low
         else:
-            sharpe_score = 0.1
+            sharpe_score = score_fallback
         
         quality_score = (icir_score + sharpe_score) / 2
         scores.append(quality_score)
-        weights.append(0.2)
+        weights.append(w_quality)
         
-        # 4. 替换可行性得分 (权重0.1)
+        # 4. 替换可行性得分
         can_replace = evaluation['can_replace']
-        feasibility_score = 1.0 if can_replace else 0.3
+        feasibility_score = float(
+            feasibility_cfg.get('replace', 1.0) if can_replace else feasibility_cfg.get('no_replace', 0.3)
+        )
         scores.append(feasibility_score)
-        weights.append(0.1)
+        weights.append(w_feasibility)
         
         # 计算加权平均
         total_score = np.average(scores, weights=weights)
@@ -443,19 +495,26 @@ class MarginalContributionEvaluator:
     ) -> MarginalContributionResult:
         """确定最终评估结果"""
         thresholds = self.config.get('thresholds', {})
-        min_score = thresholds.get('min_score_for_success', 0.7)
+        scoring_cfg = self.config.get('scoring', {})
+        min_score = float(
+            scoring_cfg.get('decision_success_score', thresholds.get('min_score_for_success', 0.7))
+        )
         
         improvement = evaluation['improvement']
         can_replace = evaluation['can_replace']
         max_correlation = evaluation['max_correlation']
         max_allowed = thresholds.get('max_correlation', 0.6)
         
+        failure_score_cut = float(scoring_cfg.get('decision_failure_score', 0.3))
+        failure_improve_cut = float(scoring_cfg.get('decision_failure_improvement', -0.1))
+        corr_fail_multiplier = float(scoring_cfg.get('decision_corr_fail_multiplier', 1.2))
+
         # 决策逻辑
         if score >= min_score and improvement > 0 and max_correlation <= max_allowed:
             evaluation_result = EvaluationResult.SUCCESS
-        elif score < 0.3 or improvement < -0.1:
+        elif score < failure_score_cut or improvement < failure_improve_cut:
             evaluation_result = EvaluationResult.FAILURE
-        elif max_correlation > max_allowed * 1.2:  # 相关性太高
+        elif max_correlation > max_allowed * corr_fail_multiplier:  # 相关性太高
             evaluation_result = EvaluationResult.FAILURE
         else:
             evaluation_result = EvaluationResult.NEUTRAL

@@ -72,7 +72,13 @@ def run_phase_regime_comparison(
     target_size: int = None,
     num_days: int = None,
     horizon_days: int = None,
-    annual_days: int = 250,
+    split_gap_days: int = None,
+    show_progress: bool = False,
+    asof_filter: bool = False,
+    export_sim_data: bool = False,
+    export_root: str = "data/simulated_phase_regime",
+    export_pool: str = "all_stocks",
+    export_labels: bool = True,
 ):
     scenarios = build_phase_regime_scenarios()
     if baseline_only:
@@ -89,7 +95,14 @@ def run_phase_regime_comparison(
             cfg.NUM_DAYS = num_days
         if horizon_days is not None:
             cfg.ROLLING_WINDOW = horizon_days
-        cfg.ANNUAL_DAYS = annual_days
+        if split_gap_days is not None:
+            cfg.SPLIT_GAP_DAYS = split_gap_days
+        cfg.SHOW_PROGRESS = bool(show_progress)
+        cfg.ENABLE_ASOF_FILTER = bool(asof_filter)
+        cfg.EXPORT_SIM_DATA_AS_REAL_FORMAT = bool(export_sim_data)
+        cfg.EXPORT_SIM_OUTPUT_ROOT = export_root
+        cfg.EXPORT_SIM_POOL_NAME = export_pool
+        cfg.EXPORT_SIM_INCLUDE_FORWARD_LABELS = bool(export_labels)
         if cfg.TARGET_SIZE > cfg.NUM_FACTORS:
             raise ValueError("target_size cannot exceed num_factors")
     comparator = ScenarioComparator(scenarios)

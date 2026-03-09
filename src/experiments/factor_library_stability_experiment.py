@@ -32,7 +32,6 @@ class StabilityExperimentConfig:
     update_frequency: int = 21
     num_test_rounds: Optional[int] = None
     rolling_window: int = 5
-    annual_days: int = 250
 
     # OOS/早停参数
     oos_horizon: int = 21
@@ -63,7 +62,6 @@ def _to_engine_config(cfg: StabilityExperimentConfig) -> PerformanceTestConfig:
     engine_cfg.UPDATE_FREQUENCY = cfg.update_frequency
     engine_cfg.NUM_TEST_ROUNDS = cfg.num_test_rounds
     engine_cfg.ROLLING_WINDOW = cfg.rolling_window
-    engine_cfg.ANNUAL_DAYS = cfg.annual_days
     engine_cfg.OOS_HORIZON = cfg.oos_horizon
     engine_cfg.EVAL_MODE = cfg.eval_mode
     engine_cfg.TRAIN_RATIO = cfg.train_ratio

@@ -36,7 +36,31 @@ def main():
     parser.add_argument("--target-size", type=int, default=None, help="入库因子数量覆盖")
     parser.add_argument("--num-days", type=int, default=None, help="总交易日覆盖")
     parser.add_argument("--horizon-days", type=int, default=None, help="前瞻窗口天数(共享于IC/LS)")
-    parser.add_argument("--annual-days", type=int, default=250, help="年化天数")
+    parser.add_argument("--split-gap-days", type=int, default=None, help="train/val/test之间的间隔天数")
+    parser.add_argument("--progress", action="store_true", help="显示模拟进度条")
+    parser.add_argument("--asof-filter", action="store_true", help="开启as-of可得性过滤评估")
+    parser.add_argument(
+        "--export-sim-data",
+        action="store_true",
+        help="将模拟数据按真实数据格式写入 data 目录",
+    )
+    parser.add_argument(
+        "--export-root",
+        type=str,
+        default="data/simulated",
+        help="模拟数据导出根目录",
+    )
+    parser.add_argument(
+        "--export-pool",
+        type=str,
+        default="all_stocks",
+        help="导出的股票池文件名（不含扩展名）",
+    )
+    parser.add_argument(
+        "--no-export-labels",
+        action="store_true",
+        help="导出时不写前瞻收益标签文件",
+    )
     args = parser.parse_args()
 
     if args.baseline_only:
@@ -58,7 +82,14 @@ def main():
             cfg.NUM_DAYS = args.num_days
         if args.horizon_days is not None:
             cfg.ROLLING_WINDOW = args.horizon_days
-        cfg.ANNUAL_DAYS = args.annual_days
+        if args.split_gap_days is not None:
+            cfg.SPLIT_GAP_DAYS = args.split_gap_days
+        cfg.SHOW_PROGRESS = bool(args.progress)
+        cfg.ENABLE_ASOF_FILTER = bool(args.asof_filter)
+        cfg.EXPORT_SIM_DATA_AS_REAL_FORMAT = bool(args.export_sim_data)
+        cfg.EXPORT_SIM_OUTPUT_ROOT = args.export_root
+        cfg.EXPORT_SIM_POOL_NAME = args.export_pool
+        cfg.EXPORT_SIM_INCLUDE_FORWARD_LABELS = not bool(args.no_export_labels)
         if cfg.TARGET_SIZE > cfg.NUM_FACTORS:
             raise ValueError("target-size 不能大于 num-factors")
 

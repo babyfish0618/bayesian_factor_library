@@ -3,15 +3,16 @@
 ## 概述
 迭代3已落地为“多指标 + 多时间窗口 + 边际贡献评估 + 全量跟踪输出”的闭环框架。
 
-更新时间: 2026-03-07
+更新时间: 2026-03-09
 
 ## 当前能力
 
 ### 1. 因子选择（Top-K）
 - 模块: `src/core/bayesian_selector_v2.py`
 - 公式:
-- `final_score = 0.7 * aggregate_score + 0.3 * bayesian_score`
+- `final_score = w_agg * aggregate_score + w_bayes * bayesian_score`
 - `bayesian_score` 来自 `Beta(alpha, beta)` 采样（Thompson Sampling）
+- `w_agg/w_bayes` 由 `config/evaluation_config.yaml -> bayesian.selection_blend.*` 控制
 - 对全体候选按 `final_score` 排序取 Top-K（不是只看打印的前几个）
 
 ### 2. 选中因子更新
@@ -29,8 +30,8 @@
 - 模块: `src/evaluation/marginal_contrib.py`
 - 输出分类: `SUCCESS/FAILURE/NEUTRAL/UNCERTAIN`
 - 判定核心:
-- SUCCESS: `score >= 0.7` 且 `improvement > 0` 且 `max_correlation <= 0.6`
-- FAILURE: `score < 0.3` 或 `improvement < -0.1` 或 `max_correlation > 0.72`
+- SUCCESS: `score >= decision_success_score` 且 `improvement > 0` 且 `max_correlation <= max_correlation_threshold`
+- FAILURE: `score < decision_failure_score` 或 `improvement < decision_failure_improvement` 或 `max_correlation > decision_corr_fail_multiplier * max_correlation_threshold`
 - 更新权重（默认）:
 - unselected success: `alpha += 0.5`
 - unselected failure: `beta += 0.0`（通常不惩罚）
@@ -56,6 +57,8 @@
 - 目的:
 - 避免“好因子永远好”的过度理想化假设
 - 在可控复杂度下检验因子库迭代逻辑的鲁棒性
+- 新增可选进度条：
+- `show_progress=True` 时可显示因子生成与写盘进度
 
 ### 6. 因子库迭代逻辑（更新）
 - 每轮 C 类样本外评估改为固定 validation 集评估（不参与更新）：
@@ -69,6 +72,10 @@
 - 未触发 -> 取最后一轮
 - 数据切分参数支持：
 - `TRAIN_RATIO / VALIDATION_RATIO / TEST_RATIO`（测试集可为0）
+- 新增切分间隔参数：
+- `SPLIT_GAP_DAYS`（默认=`ROLLING_WINDOW`，用于train/val/test边界隔离）
+- 新增 `as-of` 过滤模式：
+- `ENABLE_ASOF_FILTER=True` 时，使用固定截止日 `T` 过滤可得标签（用于“T日出库”流程）
 - 评估模式支持：
 - `strict_holdout` 与 `walk_forward_test`
 - 当 `NUM_TEST_ROUNDS=None` 时，迭代可自动跑到目标区间末尾（非固定24轮）
@@ -85,13 +92,35 @@
 - `num_stocks / num_factors / target_size / num_days`
 - 可复用流程类已抽离：
 - `src/workflows/factor_library_iteration_engine.py`（单场景迭代引擎）
+- `src/workflows/real_data_iteration_engine.py`（真实数据单场景引擎，复用主迭代流程）
+- `src/data/real_data_loader.py`（真实数据目录读取层）
 - `src/experiments/factor_library_scenario_experiment.py`（多场景对比）
 - `src/experiments/factor_library_stability_experiment.py`（稳定性收敛实验与可视化）
 - 模拟数据逻辑位于：
 - `src/simulation/latent_factor_data_simulator.py`
+- 新增独立模拟数据落盘入口：
+- `src/tests/experiment_generate_sim_data.py`
+- 新增真实数据单场景入口：
+- `src/tests/experiment_real_data_single.py`
+- 新增真实数据多asof滚动出库入口：
+- `src/tests/experiment_real_data_asof_rolling.py`
 - 历史MVP模块已归档至：
 - `src/core/__archive/`
 - `src/simulation/__archive/`
+
+### 10. 新增能力（2026-03-09）
+- 模拟数据可独立导出为真实数据接口格式（无需跑迭代）：
+- `base/daily_returns.csv`
+- `factors/<factor_id>.csv`
+- `pools/<pool_name>.csv`
+- `labels/forward_returns_h{window}.csv`（可选）
+- `meta/simulation_manifest.json`
+- 真实数据单场景已支持直接从文件夹读数并运行因子库迭代（无场景对比依赖）
+- 标签处理原则补充：
+- 可一次性预计算前瞻标签，但在训练/更新时必须按 `asof` 可得性使用（避免未来数据泄露）
+- 新增“指定单日/多日 asof 滚动出库”能力：
+- 每个 asof 在独立回看窗口内出最终因子库
+- 输出跨日期库对比（重叠度/Jaccard/换手率）与各自验证集表现
 
 ### 8. 稳定性可视化输出（新增）
 - 长周期实验会额外导出：
@@ -113,6 +142,7 @@
 - 采用因子加权多空：
 - 多头权重 `w+ ∝ max(x,0)`，空头权重 `w- ∝ max(-x,0)`
 - 归一化后满足 `sum(w+)=1`、`sum(w-)=1`（总杠杆2x）
+- 年化参数统一读取 `evaluation_config.yaml` 中 `annualization_days`（单一来源）
 
 ## 本轮（2026-03-07）关键修订
 - 新增 `FactorLibraryTracker`，支持“轮次级 + 因子级 + 全库级”三层跟踪。

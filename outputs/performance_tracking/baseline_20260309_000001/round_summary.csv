@@ -1,4 +1,0 @@
-round,date,selected_total,updated_selected_total,selected_good,selected_medium,selected_bad,selected_success_good,selected_success_medium,selected_success_bad,selected_failure_good,selected_failure_medium,selected_failure_bad,selected_success_total,selected_failure_total,unselected_success_total,unselected_failure_total,marginal_evaluations_total
-2,2014-06-19,30,30,18,9,3,14,6,0,4,5,1,20,10,29,41,70
-3,2014-07-18,30,30,17,12,1,9,5,3,9,4,0,17,13,31,39,70
-4,2014-08-18,30,30,16,12,2,12,6,0,5,6,1,18,12,27,41,70

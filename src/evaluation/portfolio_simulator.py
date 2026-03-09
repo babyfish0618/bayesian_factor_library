@@ -69,7 +69,7 @@ class PortfolioSimulator:
         'portfolio_method': 'equal_weight',
         'replacement_strategy': 'correlation_based',
         'improvement_threshold': 0.01,
-        'annualization_factor': 252,  # 年化因子
+        'annualization_factor': 250,  # 年化因子（默认与主流程统一）
         'risk_free_rate': 0.02,       # 无风险利率
         'max_weight': 0.3,            # 最大单因子权重
         'min_weight': 0.01            # 最小单因子权重

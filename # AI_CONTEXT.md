@@ -108,9 +108,11 @@ docs/
 主要文件：  
 CODE_ARCHITECTURE.md  
 EVALUATION_STANDARDS.md  
+PARAMETER_MAPPING.md  
 ITERATION3_SUMMARY.md  
 FACTOR_LIBRARY_EVAL_PROTOCOL.md  
 PAPER_COMPARISON.md
+example.md
 
 只有在需要理解设计时再阅读。
 
@@ -124,11 +126,21 @@ PAPER_COMPARISON.md
 - 参数调整（阈值、权重、窗口、更新规则）
 - 跟踪输出调整（输出文件、字段、口径）
 
-必须同步更新这 3 个文件：
+必须同步更新这些文件：
 
 - docs/CODE_ARCHITECTURE.md
 - docs/ITERATION3_SUMMARY.md
 - docs/EVALUATION_STANDARDS.md
+- docs/PARAMETER_MAPPING.md
+
+此外，若出现以下任一变化，必须同步更新：
+
+- `src/tests/` 新增实验入口 `.py` 文件
+- 现有 `src/tests/` 入口脚本的参数、调用方式、默认行为发生变化
+
+必须同步更新文件：
+
+- docs/example.md
 
 ---
 

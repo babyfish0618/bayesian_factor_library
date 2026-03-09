@@ -1,6 +1,6 @@
 # 代码架构速查文档（Iteration3 当前实现）
 
-> 更新时间: 2026-03-07
+> 更新时间: 2026-03-09
 > 目的: 快速理解当前代码模块关系、核心流程与跟踪输出
 
 ## 1. 模块关系图
@@ -9,12 +9,17 @@
 graph TB
     subgraph 入口层
         A[src/tests/test_performance.py<br/>性能测试入口]
+        A2[src/tests/experiment_generate_sim_data.py<br/>模拟数据落盘入口]
+        A3[src/tests/experiment_real_data_single.py<br/>真实数据单场景入口]
+        A4[src/tests/experiment_real_data_asof_rolling.py<br/>多asof滚动出库入口]
     end
 
     subgraph 实验编排层
         K[ScenarioComparator<br/>多场景对比]
         M[StabilityExperimentRunner<br/>长周期稳定性实验]
         L[FactorLibraryIterationEngine<br/>单场景迭代引擎]
+        L2[RealDataIterationEngine<br/>真实数据单场景迭代引擎]
+        L3[AsOfLibraryGenerator<br/>多asof滚动出库器]
     end
 
     subgraph 核心选择层
@@ -32,6 +37,10 @@ graph TB
         J[LatentFactorDataSimulator<br/>测试数据模拟器]
     end
 
+    subgraph 数据接入层
+        R[RealDataLoader<br/>真实数据文件读取]
+    end
+
     subgraph 跟踪与输出层
         G[FactorLibraryTracker<br/>轮次/因子状态跟踪]
     end
@@ -43,6 +52,12 @@ graph TB
 
     A --> K
     A --> M
+    A2 --> J
+    A3 --> L2
+    A4 --> L3
+    L2 --> R
+    L2 --> L
+    L3 --> L2
     K --> L
     M --> L
     L --> B
@@ -120,6 +135,15 @@ graph TB
 - 对测试入口提供稳定接口：
 - `build_market_data()`
 - `generate_factors()`
+- `export_as_real_data_format()`（可选导出为真实数据目录结构）
+- 进度显示（新增）：
+- `show_progress=True` 时可显示“状态转移/因子生成/写盘”进度条（tqdm可用时）
+- 日期生成规则（新增）：
+- 若提供 `start_date+end_date`，按闭区间交易日生成（优先于 `num_days`）
+- 若未提供 `end_date`，按 `num_days` 从 `start_date` 向后生成
+- `meta/simulation_manifest.json` 中：
+- `start_date/end_date/num_days` 表示“实际输出数据”的起止与天数
+- `config_start_date/config_end_date/config_num_days` 表示“输入配置参数”
 - 后续接入真实数据时，可在 simulation/data-source 层替换，不改测试评估主流程
 
 ### 2.8 `src/workflows/factor_library_iteration_engine.py`（流程编排）
@@ -130,23 +154,58 @@ graph TB
 - `walk_forward_test`（滚动到test末尾）
 - `strict_holdout` 最终选库为“稳定性通过轮次中的Validation最优轮次”，并保留最后一轮对照
 - 输出 `final_library.json`，作为后续融合阶段输入候选
+- 数据准备步骤已抽象为 `_prepare_data()`，支持子类覆写
+- 新增切分边界隔离：
+- `SPLIT_GAP_DAYS`（默认=`ROLLING_WINDOW`）
+- 在 train-val、val-test 之间保留 gap，避免边界标签泄露
 
-### 2.9 `src/experiments/factor_library_scenario_experiment.py`（实验管理）
+### 2.9 `src/workflows/real_data_iteration_engine.py`（真实数据单场景）
+- 继承 `FactorLibraryIterationEngine`
+- 仅覆写 `_prepare_data()`：
+- 从真实数据文件读取收益/暴露/股票池
+- 计算 `R(t+1->t+n)` 标签
+- 构造 `EnhancedFactor.performance_history`
+- 其余选择、更新、稳定性、导出流程完全复用主引擎
+- 支持 `REAL_DATA_ASOF_DATE + REAL_DATA_LOOKBACK_DAYS`：
+- 对任意asof构建“回看窗口子样本”后独立出库
+
+### 2.10 `src/workflows/asof_library_generator.py`（多asof滚动出库）
+- 循环多个 `asof_date`：
+- 每个asof独立调用 `RealDataIterationEngine` 生成最终库
+- 导出跨日期对比文件：
+- `asof_library_summary.csv`
+- `asof_library_overlap.csv`
+- `asof_library_seq_turnover.csv`
+- `asof_library_factors.json`
+
+### 2.11 `src/data/real_data_loader.py`（数据接入）
+- 读取：
+- `base/daily_returns.csv`
+- `factors/*.csv`
+- `pools/<pool>.csv`（可选）
+- 输出对齐后的面板矩阵：
+- `returns[stock,date]`
+- `in_pool[stock,date]`
+- `factor_scores[factor_id][stock,date]`
+
+### 2.12 `src/experiments/factor_library_scenario_experiment.py`（实验管理）
 - 封装多场景构造与批量运行
 - 输出场景对比汇总（good选中率、召回率、更新成功率等）
 
-### 2.11 `src/experiments/phase_regime_comparison_experiment.py`
+### 2.13 `src/experiments/phase_regime_comparison_experiment.py`
 - 分阶段状态转移（train/validation/test）对照实验
 - 用于验证“验证/测试阶段环境变化”对最终出库质量的影响
 
-### 2.10 `src/experiments/factor_library_stability_experiment.py`（稳定性实验）
+### 2.14 `src/experiments/factor_library_stability_experiment.py`（稳定性实验）
 - 面向“长历史 + 多轮次”实验，观察因子库收敛行为
 - 复用 `FactorLibraryIterationEngine` 跑单场景
 - 追加稳定性产物导出：
 - `stability_convergence.svg`（稳定性/换手率/OOS/收敛指标曲线）
 - `stability_report_*.json`（同口径时序数据）
 
-## 3. 主流程（`test_performance.py` / `experiment_stability_early_stop.py`）
+## 3. 主流程
+
+### 3.1 模拟实验流程（`test_performance.py` / `experiment_stability_early_stop.py`）
 
 ```text
 生成模拟数据
@@ -173,13 +232,41 @@ graph TB
 - `--seed`：设置随机种子
 - `--num-stocks/--num-factors/--target-size/--num-days`：覆盖核心规模参数
 - `--horizon-days`：覆盖共享前瞻窗口（IC/LS共用）
-- `--annual-days`：覆盖年化天数
+- `--export-sim-data/--export-root/--export-pool/--no-export-labels`：可选模拟数据落盘
+- `--split-gap-days`：切分边界隔离天数
+- `--asof-filter`：开启按 `asof_date` 可得性过滤评估
+- `--progress`：显示模拟进度条（tqdm可用时）
 
 `src/tests/experiment_phase_regime_comparison.py` 参数:
 - `--baseline-only`
 - `--num-stocks/--num-factors/--target-size/--num-days`
 - `--horizon-days`
-- `--annual-days`
+
+### 3.2 模拟数据独立落盘（`experiment_generate_sim_data.py`）
+- 仅生成并写盘，不跑选择迭代
+- 输出目录结构：
+- `base/daily_returns.csv`
+- `factors/<factor_id>.csv`
+- `pools/<pool_name>.csv`
+- `labels/forward_returns_h{window}.csv`（可选）
+- `meta/simulation_manifest.json`
+
+### 3.3 真实数据单场景（`experiment_real_data_single.py`）
+- 输入：
+- `--daily-returns`
+- `--factors-dir`
+- `--pool-file`（可选）
+- 输出：
+- 与模拟实验相同的因子库跟踪产物（round/tracker/final_library/svg/csv）
+
+### 3.4 多asof滚动出库（`experiment_real_data_asof_rolling.py`）
+- 支持两种 asof 输入方式：
+- 显式列表：`--asof-dates`
+- 区间生成：`--asof-start/--asof-end/--asof-step-days`
+- 每个 asof 独立执行：
+- 以 `lookback_days` 构造回看窗口
+- 按 `train/validation/test` 切分并出最终库
+- 仅关注最终库与跨日期对比，不依赖每轮细节
 
 ## 4. 关键配置映射
 
@@ -187,6 +274,7 @@ graph TB
 
 - `time_windows.selection`: 选择阶段多窗口（默认 5/20/60）
 - `time_windows.evaluation.selected_short`: 选中因子 success 回看窗口（默认 10）
+- `annualization_days`: 全链路年化天数（selector/factor/marginal/OOS统一口径）
 - `success_thresholds.selected`: 选中因子 success 阈值
 - `success_thresholds.unselected`: 未选中因子边际评估阈值
 - `bayesian.update_rules`: alpha/beta 更新权重

@@ -1,0 +1,13 @@
+{
+  "start_date": "2014-01-01",
+  "end_date": "2015-12-01",
+  "num_days": 500,
+  "num_stocks": 1000,
+  "num_factors": 120,
+  "rolling_window": 5,
+  "daily_returns_file": "data/sim_progress_demo/base/daily_returns.csv",
+  "pool_file": "data/sim_progress_demo/pools/csi_all.csv",
+  "factors_dir": "data/sim_progress_demo/factors",
+  "labels_file": "data/sim_progress_demo/labels/forward_returns_h5.csv",
+  "time_alignment": "signal x(t,end_of_day) -> label R(t+1->t+n), excludes t-day return"
+}

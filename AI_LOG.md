@@ -714,3 +714,309 @@
 ### 验证结果
 - 原告警“因子收益率数据不存在”不再出现。
 - `test_performance` 中更新成功率由原先接近 0 提升到稳定水平（本次验证约 70%）。
+
+## 2026-03-09 - 模拟数据导出为真实数据格式（可选）
+
+### 目标
+- 在不改变当前实验主流程的前提下，为 `simulation` 增加“可选写盘”能力。
+- 导出文件结构对齐真实数据接入接口，便于后续直接做 `mock -> real` 切换联调。
+
+### 实现内容
+1. `src/simulation/latent_factor_data_simulator.py`
+- 新增内部缓存：
+  - 最近一次 `dates/stock_returns/forward_returns`
+  - 每个因子的截面暴露矩阵（`factor_id -> [stock, signal_date]`）
+- 新增方法 `export_as_real_data_format(...)`，可输出：
+  - `base/daily_returns.csv`：`end_date, stock_code, rtn`
+  - `factors/<factor_id>.csv`：`end_date, stock_code, score`
+  - `pools/<pool_name>.csv`：`end_date, stock_code, in_pool`
+  - `labels/forward_returns_h{window}.csv`（可选）：`end_date, label_start_date, label_end_date, stock_code, forward_rtn`
+  - `meta/simulation_manifest.json`（导出清单与关键元信息）
+- 时间对齐说明写入 manifest：
+  - `x(t)` 对应 `R(t+1->t+n)`，不包含 t 日收益。
+
+2. `src/workflows/factor_library_iteration_engine.py`
+- 增加可选导出触发：
+  - `EXPORT_SIM_DATA_AS_REAL_FORMAT`
+  - `EXPORT_SIM_OUTPUT_ROOT`
+  - `EXPORT_SIM_POOL_NAME`
+  - `EXPORT_SIM_INCLUDE_FORWARD_LABELS`
+- 导出路径按场景自动分目录，避免多场景覆盖：
+  - `{EXPORT_SIM_OUTPUT_ROOT}/{SCENARIO_NAME}/...`
+- 导出结果路径写入 `results["sim_data_export"]`。
+
+3. `src/experiments/factor_library_scenario_experiment.py`
+- `PerformanceTestConfig` 新增上述导出参数（默认关闭）。
+
+4. 实验入口参数
+- `src/tests/test_performance.py` 新增：
+  - `--export-sim-data`
+  - `--export-root`
+  - `--export-pool`
+  - `--no-export-labels`
+- `src/tests/experiment_phase_regime_comparison.py` 与
+  `src/experiments/phase_regime_comparison_experiment.py` 同步新增对应参数透传。
+
+### 验证
+- 通过命令（baseline-only 小样本）验证成功写盘：
+  - `python3 -u src/tests/test_performance.py --baseline-only --seed 7 --num-stocks 120 --num-factors 20 --target-size 8 --num-days 180 --horizon-days 5 --export-sim-data --export-root data/simulated --export-pool hs300 --annual-days 250`
+- 生成目录示例：
+  - `data/simulated/baseline/base/daily_returns.csv`
+  - `data/simulated/baseline/factors/good_000.csv`（每因子一个文件）
+  - `data/simulated/baseline/pools/hs300.csv`
+  - `data/simulated/baseline/labels/forward_returns_h5.csv`
+  - `data/simulated/baseline/meta/simulation_manifest.json`
+
+## 2026-03-09 - 新增“独立数据生成入口 + 真实数据单场景入口”
+
+### 新增文件
+1. `src/tests/experiment_generate_sim_data.py`
+- 仅负责生成模拟数据并写入本地，不运行因子库迭代。
+- 主要参数：
+  - `--num-stocks --num-days --num-factors --horizon-days`
+  - `--output-root --pool-name`
+  - `--no-labels`
+
+2. `src/data/real_data_loader.py`
+- 负责从真实格式目录读取：
+  - `base/daily_returns.csv`
+  - `factors/*.csv`
+  - `pools/<pool>.csv`（可选）
+- 输出统一对齐后的面板矩阵：
+  - `returns [stock, date]`
+  - `in_pool [stock, date]`
+  - `factor_scores[factor_id] [stock, date]`
+
+3. `src/workflows/real_data_iteration_engine.py`
+- 新建 `RealDataIterationEngine`，继承 `FactorLibraryIterationEngine`。
+- 复用主迭代流程，仅重写 `_prepare_data()`：
+  - 从文件夹读真实数据
+  - 计算 `R(t+1->t+n)`
+  - 构建每个因子的 `EnhancedFactor.performance_history`
+
+4. `src/tests/experiment_real_data_single.py`
+- 真实数据单场景入口（无场景对比）。
+- 主要参数：
+  - `--daily-returns --factors-dir --pool-file`
+  - `--target-size --horizon-days --update-frequency`
+  - `--train-ratio --validation-ratio --test-ratio`
+  - `--eval-mode --num-test-rounds`
+
+### 复用性改造
+- `src/workflows/factor_library_iteration_engine.py`
+  - 抽出 `_prepare_data()`（默认模拟数据实现）以支持子类覆写。
+  - `REAL_DATA_MODE=True` 时，打印真实数据来源路径，避免显示模拟参数误导。
+
+### 验证
+- 已验证闭环：
+  1) 用 `experiment_generate_sim_data.py` 生成文件；
+  2) 用 `experiment_real_data_single.py` 从该目录读取并跑完整迭代成功。
+
+## 2026-03-09 - 进度条与标签可得性边界控制
+
+### 1) 模拟数据进度显示（可选）
+- `src/simulation/latent_factor_data_simulator.py`
+  - 新增 `show_progress` 配置。
+  - 因子生成、潜在状态转移、写出 base/pools/factors/labels 时支持进度条。
+  - 若环境存在 `tqdm` 则显示；不存在时自动退化为无进度条（不报错）。
+
+### 2) 新增切分间隔参数（防边界泄露）
+- `src/experiments/factor_library_scenario_experiment.py`
+  - 新增 `SPLIT_GAP_DAYS`（默认 `None`，运行时按 `ROLLING_WINDOW` 解释）。
+- `src/workflows/factor_library_iteration_engine.py`
+  - `train/validation/test` 切分新增 gap：
+    - train 与 validation 之间插入 `gap_days`
+    - validation 与 test 之间插入 `gap_days`
+  - 目的：避免边界附近标签窗口跨区间污染。
+  - `scenario_params` 输出新增 `split_gap_days`。
+
+### 3) 测试入口参数新增
+- `src/tests/test_performance.py`
+  - `--split-gap-days`
+  - `--progress`
+- `src/tests/experiment_phase_regime_comparison.py`
+  - `--split-gap-days`
+  - `--progress`
+- `src/experiments/phase_regime_comparison_experiment.py`
+  - 同步透传 `split_gap_days/show_progress`
+- `src/tests/experiment_generate_sim_data.py`
+  - 新增 `--progress`
+- `src/tests/experiment_real_data_single.py`
+  - 新增 `--split-gap-days`
+
+### 4) 标签计算口径确认
+- 继续采用“可一次性预计算前瞻标签”的工程实现。
+- 规范要求：训练/更新/验证时必须满足标签可得性边界，且边界由 `split_gap_days` 隔离，避免未来数据泄露。
+
+## 2026-03-09 - 新增 as-of 可得性过滤模式
+
+### 功能
+- 在每轮评估中引入 `asof_date = tau_r`（本轮决策日期）。
+- 当 `ENABLE_ASOF_FILTER=True` 时，仅统计 `performance.date <= asof_date` 的标签样本。
+- 适用于模拟线上日滚动可得性约束。
+
+后续语义收敛（2026-03-09）:
+- 最终收敛为单一语义：
+  - `ENABLE_ASOF_FILTER=True` 时固定使用本次运行截止日 `T` 作为 asof。
+  - 不再暴露 `round_date` 入口参数，避免离线出库场景误用。
+
+### 代码变更
+- `src/workflows/factor_library_iteration_engine.py`
+  - `_evaluate_oos_library_on_date_range(..., asof_date=None)`
+  - `_evaluate_oos_library_forward(..., asof_date=None)`
+  - 每轮 `round_metric` 新增 `asof_date`
+  - `round_compact_summary.csv` 新增 `asof_date` 列
+- 配置项：
+  - `PerformanceTestConfig.ENABLE_ASOF_FILTER`（默认 `False`）
+- 入口参数：
+  - `test_performance.py --asof-filter`
+  - `experiment_phase_regime_comparison.py --asof-filter`
+  - `experiment_real_data_single.py --asof-filter`
+
+### 说明
+- “一次性预计算标签”与“未来数据泄露”并不矛盾；
+- 关键在使用阶段是否按 `asof_date` 过滤标签可得性。
+
+## 2026-03-09 - 多asof滚动出库（真实场景）
+
+### 新增能力
+- 支持“指定单个/多个 asof_date，独立生成最终因子库并做跨日期对比”。
+- 适用于生产场景中的定时出库（单日时即为 daily run）。
+
+### 代码新增
+1. `src/workflows/asof_library_generator.py`
+- `AsOfRollingConfig` + `AsOfLibraryGenerator`
+- 对每个 asof 独立调用 `RealDataIterationEngine`
+- 导出：
+  - `asof_library_summary.csv`
+  - `asof_library_overlap.csv`
+  - `asof_library_seq_turnover.csv`
+  - `asof_library_factors.json`
+
+2. `src/tests/experiment_real_data_asof_rolling.py`
+- 支持两种 asof 输入：
+  - `--asof-dates`（显式列表）
+  - `--asof-start/--asof-end/--asof-step-days`（交易日步进生成）
+
+### 相关增强
+- `src/workflows/real_data_iteration_engine.py`
+  - 新增 `REAL_DATA_ASOF_DATE + REAL_DATA_LOOKBACK_DAYS` 切片能力
+  - 非交易日 asof 自动对齐到最近不晚于asof的交易日
+- `src/workflows/factor_library_iteration_engine.py`
+  - `_build_dataset_split` 修复：先扣除 split gap 再按比例切分，兼容 `test_ratio=0`
+  - 结果中补充 `data_window`（window_start/window_end/effective_asof_date）
+
+### 后续修订
+- 新增 `--output-dir`（`experiment_real_data_asof_rolling.py`）：
+  - 允许汇总产物输出到固定目录，便于日报/调度系统接入。
+- 修复“asof滚动场景下 OOS=0”体验问题：
+  - 在该场景中 `asof_filter` 默认参考固定 `effective_asof_date=T`（而非每轮`tau_r`），
+    使每轮验证统计在T时点可得，避免全零。
+
+## 2026-03-09 - 硬编码参数化与配置标注补充
+
+### 已参数化
+- `src/core/bayesian_selector_v2.py`
+  - 因子综合分与Thompson采样混合权重由硬编码 `0.7/0.3` 改为配置驱动：
+    - `bayesian.selection_blend.aggregate_score`
+    - `bayesian.selection_blend.bayesian_score`
+- `src/evaluation/marginal_contrib.py`
+  - 未选中因子边际贡献评估中的评分权重/分段阈值/失败判据由硬编码改为配置驱动：
+    - `marginal_contribution.scoring.weights.*`
+    - `marginal_contribution.scoring.grade_scores.*`
+    - `marginal_contribution.scoring.quality_thresholds.*`
+    - `marginal_contribution.scoring.feasibility_scores.*`
+    - `marginal_contribution.scoring.correlation_low_ratio`
+    - `marginal_contribution.scoring.decision_*`
+
+## 2026-03-09 - 年化常数统一与配置精简
+
+### 年化常数统一
+- `src/core/factor_enhanced.py`
+  - 将 `sqrt(252)` 与 `ls_return * 252` 改为从因子配置读取：
+    - `annualization_days`（默认250）
+- `src/evaluation/portfolio_simulator.py`
+  - 默认 `annualization_factor` 从 `252` 调整为 `250`。
+- `src/core/bayesian_selector_v2.py`
+  - 初始化时读取 `evaluation_config.yaml` 的 `annualization_days`；
+  - 强制将 `marginal_contribution.annualization_factor` 与全局 `annualization_days` 对齐；
+  - 在 `add_factor()` 时为每个因子注入：
+    - `annualization_days`
+    - `ic_min_periods`
+
+### IC最小样本数语义对齐
+- `src/core/factor_enhanced.py`
+  - `calculate_icir()` 最小有效样本由硬编码5改为配置驱动 `ic_min_periods`（默认10）。
+
+### 配置精简（减少歧义）
+- `config/evaluation_config.yaml`
+  - 新增全局 `annualization_days: 250`
+  - 删除主流程未使用字段：
+    - `time_windows.evaluation.unselected_short`
+    - `time_windows.ic_calculation.rolling_window`
+    - `indicator_weights.evaluation.*`
+    - `success_thresholds.*` 中未接入判定的字段
+    - `normalization.*`
+  - 保留并明确主流程使用字段（selection权重、selected阈值、unselected相关性阈值、marginal_contribution.scoring等）。
+- `src/utils/config_manager.py`
+  - 默认配置结构同步精简；
+  - 阈值校验改为“按字段存在性校验”，兼容精简配置；
+  - `print_summary()` 兼容可选阈值字段，避免None格式化报错。
+
+## 2026-03-09 - 参数映射文档与标准文档对齐
+
+- 新增 `docs/PARAMETER_MAPPING.md`
+  - 以“参数-默认值-代码位置-作用”方式列出当前主流程有效参数。
+  - 区分 `evaluation_config.yaml` 参数与引擎级参数（如 `ROLLING_WINDOW/ANNUAL_DAYS`）。
+- 重写 `docs/EVALUATION_STANDARDS.md`
+  - 清理过时字段（如未接入的 evaluation 权重/阈值描述）
+  - 明确 `min_periods` 含义：最小样本门槛，不是窗口长度
+  - 明确当前 A/B/C 判定与年化口径一致性
+- 更新 `# AI_CONTEXT.md`
+  - 文档清单与同步规则新增 `docs/PARAMETER_MAPPING.md`
+
+## 2026-03-09 - 年化参数单一来源化（移除双入口）
+
+### 变更目标
+- 取消引擎侧 `ANNUAL_DAYS/--annual-days` 链路，避免与 `evaluation_config.yaml` 双轨并存。
+- 全流程统一读取 `annualization_days`（单一来源）。
+
+### 代码变更
+- 删除实验配置字段 `PerformanceTestConfig.ANNUAL_DAYS` 及相关赋值链路。
+- 删除测试入口参数 `--annual-days`：
+  - `src/tests/test_performance.py`
+  - `src/tests/experiment_phase_regime_comparison.py`
+  - `src/tests/experiment_real_data_single.py`
+  - `src/tests/experiment_real_data_asof_rolling.py`
+- 删除实验/工作流中 annual_days 透传：
+  - `src/experiments/phase_regime_comparison_experiment.py`
+  - `src/workflows/asof_library_generator.py`
+  - `src/experiments/factor_library_stability_experiment.py`
+- 引擎初始化 selector 改为不注入年化覆盖值：
+  - `src/workflows/factor_library_iteration_engine.py`
+- 引擎年化计算改为读取 `self.selector.annualization_days`。
+
+### 文档同步
+- 完整同步并去除双参数表述：
+  - `docs/EVALUATION_STANDARDS.md`
+  - `docs/PARAMETER_MAPPING.md`
+  - `docs/CODE_ARCHITECTURE.md`
+  - `docs/ITERATION3_SUMMARY.md`
+  - `docs/example.md`
+  - `docs/REAL_DATA_INTEGRATION_GUIDE.md`
+
+### 备注
+- 引擎运行日志现在显示：
+  - 年化天数 = 从 `config/evaluation_config.yaml` 读取到的 `annualization_days`。
+
+### 配置文件注释补充
+- `config/evaluation_config.yaml`
+  - 对当前未直接使用字段增加显式注释：
+    - `time_windows.evaluation.unselected_short`
+    - `time_windows.ic_calculation.rolling_window`
+    - `indicator_weights.evaluation.*`
+    - `success_thresholds.selected.ls_return_annual`
+    - `success_thresholds.unselected.icir/ls_return_annual/rank_percentile/win_rate`
+    - `marginal_contribution.simulation_method`
+    - `marginal_contribution.portfolio_methods`
+    - `normalization.*` 区块

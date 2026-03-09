@@ -30,7 +30,31 @@ def main():
     parser.add_argument("--target-size", type=int, default=None, help="入库因子数量覆盖")
     parser.add_argument("--num-days", type=int, default=None, help="总交易日覆盖")
     parser.add_argument("--horizon-days", type=int, default=None, help="前瞻窗口天数(共享于IC/LS)")
-    parser.add_argument("--annual-days", type=int, default=250, help="年化天数")
+    parser.add_argument("--split-gap-days", type=int, default=None, help="train/val/test之间的间隔天数")
+    parser.add_argument("--progress", action="store_true", help="显示模拟进度条")
+    parser.add_argument("--asof-filter", action="store_true", help="开启as-of可得性过滤评估")
+    parser.add_argument(
+        "--export-sim-data",
+        action="store_true",
+        help="将模拟数据按真实数据格式写入 data 目录",
+    )
+    parser.add_argument(
+        "--export-root",
+        type=str,
+        default="data/simulated_phase_regime",
+        help="模拟数据导出根目录",
+    )
+    parser.add_argument(
+        "--export-pool",
+        type=str,
+        default="all_stocks",
+        help="导出的股票池文件名（不含扩展名）",
+    )
+    parser.add_argument(
+        "--no-export-labels",
+        action="store_true",
+        help="导出时不写前瞻收益标签文件",
+    )
     args = parser.parse_args()
     run_phase_regime_comparison(
         baseline_only=args.baseline_only,
@@ -40,7 +64,13 @@ def main():
         target_size=args.target_size,
         num_days=args.num_days,
         horizon_days=args.horizon_days,
-        annual_days=args.annual_days,
+        split_gap_days=args.split_gap_days,
+        show_progress=args.progress,
+        asof_filter=args.asof_filter,
+        export_sim_data=args.export_sim_data,
+        export_root=args.export_root,
+        export_pool=args.export_pool,
+        export_labels=(not args.no_export_labels),
     )
 
 

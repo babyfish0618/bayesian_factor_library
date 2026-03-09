@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 import numpy as np
+import yaml
 
 from core.bayesian_selector_v2 import BayesianSelectorV2
 from evaluation.library_dynamics_plotter import export_test_dynamics_svg, export_validation_dynamics_svg
@@ -30,32 +31,8 @@ class FactorLibraryIterationEngine:
         run_tag = f"{self.config.SCENARIO_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.tracker = FactorLibraryTracker(run_tag=run_tag)
 
-    def run_full_test(self) -> Dict:
-        """运行完整实验（单场景）。"""
-        np.random.seed(self.config.RANDOM_SEED)
-
-        print("=" * 80)
-        print("贝叶斯因子选择器 - 性能测试")
-        print("=" * 80)
-        print(f"场景: {self.config.SCENARIO_NAME}")
-        print("测试参数:")
-        print(f"  股票数量: {self.config.NUM_STOCKS}")
-        print(f"  时间跨度: {self.config.NUM_DAYS} 交易日")
-        print(f"  因子数量: {self.config.NUM_FACTORS}")
-        print(f"  每次选择: {self.config.TARGET_SIZE} 个因子")
-        print(f"  更新频率: 每月 ({self.config.UPDATE_FREQUENCY} 交易日)")
-        print(f"  滚动窗口: {self.config.ROLLING_WINDOW} 天")
-        print(f"  年化天数: {getattr(self.config, 'ANNUAL_DAYS', 250)}")
-        print(f"  收益率mu/sigma: {self.config.STOCK_RETURN_MU:.6f}/{self.config.STOCK_RETURN_SIGMA:.6f}")
-        print(f"  转移概率 good->good: {self.config.TRANSITION_PROBS['good']['good']:.2f}")
-        print(
-            f"  数据切分 train/val/test: "
-            f"{self.config.TRAIN_RATIO:.0%}/{self.config.VALIDATION_RATIO:.0%}/{self.config.TEST_RATIO:.0%}"
-        )
-        print(f"  评估模式: {self.config.EVAL_MODE}")
-        print()
-
-        print("1. 生成测试数据...")
+    def _prepare_data(self) -> Tuple[Dict[str, object], Dict[str, str], float]:
+        """准备样本数据与因子对象（默认：模拟数据）。"""
         start_time = time.time()
 
         sim_config = LatentFactorSimulationConfig(
@@ -79,6 +56,9 @@ class FactorLibraryIterationEngine:
             transition_probs=self.config.TRANSITION_PROBS,
             anchor_reversion_prob=self.config.ANCHOR_REVERSION_PROB,
             random_seed=self.config.RANDOM_SEED,
+            start_date=getattr(self.config, "START_DATE", "2014-01-01"),
+            end_date=getattr(self.config, "END_DATE", None),
+            show_progress=bool(getattr(self.config, "SHOW_PROGRESS", False)),
         )
         self.simulator = LatentFactorDataSimulator(sim_config)
 
@@ -92,6 +72,8 @@ class FactorLibraryIterationEngine:
             f"   train区间: {split_info['train_start_date']} ~ {split_info['train_end_date']} | "
             f"validation区间: {split_info['val_start_date']} ~ {split_info['val_end_date']}"
         )
+        if split_info.get("gap_days", 0) > 0:
+            print(f"   split gap: {split_info['gap_days']} 天")
         if split_info["test_size"] > 0:
             print(f"   test区间: {split_info['test_start_date']} ~ {split_info['test_end_date']}")
 
@@ -102,8 +84,94 @@ class FactorLibraryIterationEngine:
             phase_boundaries=split_info,
             phase_transition_probs=getattr(self.config, "PHASE_TRANSITION_PROBS", None),
         )
+        sim_export_files = {}
+        if bool(getattr(self.config, "EXPORT_SIM_DATA_AS_REAL_FORMAT", False)):
+            export_root = os.path.join(
+                getattr(self.config, "EXPORT_SIM_OUTPUT_ROOT", "data/simulated"),
+                self.config.SCENARIO_NAME,
+            )
+            sim_export_files = self.simulator.export_as_real_data_format(
+                output_root=export_root,
+                pool_name=getattr(self.config, "EXPORT_SIM_POOL_NAME", "all_stocks"),
+                include_forward_returns=bool(
+                    getattr(self.config, "EXPORT_SIM_INCLUDE_FORWARD_LABELS", True)
+                ),
+            )
+            print(f"   已导出模拟数据到真实格式目录: {sim_export_files.get('output_root')}")
 
         data_time = time.time() - start_time
+        return split_info, sim_export_files, data_time
+
+    @staticmethod
+    def _resolve_global_annualization_days(default: float = 250.0) -> float:
+        """读取统一年化天数配置（evaluation_config.yaml）。"""
+        cfg_path = os.path.join("config", "evaluation_config.yaml")
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            return float(cfg.get("annualization_days", default))
+        except Exception:
+            return float(default)
+
+    def _resolve_min_start_day(self) -> int:
+        """由配置窗口推导最早可开始轮次，避免硬编码。"""
+        # 选择打分依赖 selection 多窗口
+        selection_windows = list(self.selector.config.time_windows.get("selection", {}).values())
+        selection_max = max([int(w) for w in selection_windows], default=60)
+
+        # 选中更新依赖 selected_short 评估窗口
+        eval_windows = self.selector.config.time_windows.get("evaluation", {})
+        selected_short = int(eval_windows.get("selected_short", 10))
+
+        # 信号 x(t) 对应标签在 t+ROLLING_WINDOW 可得
+        # 因子 performance_history 日期是 realized_idx=t+ROLLING_WINDOW
+        # 为获得足够回看样本，至少应覆盖 rolling_window + required_window
+        required_window = max(selection_max, selected_short)
+        return int(self.config.ROLLING_WINDOW + required_window)
+
+    def run_full_test(self) -> Dict:
+        """运行完整实验（单场景）。"""
+        np.random.seed(self.config.RANDOM_SEED)
+
+        print("=" * 80)
+        print("贝叶斯因子选择器 - 性能测试")
+        print("=" * 80)
+        print(f"场景: {self.config.SCENARIO_NAME}")
+        real_data_mode = bool(getattr(self.config, "REAL_DATA_MODE", False))
+        print("测试参数:")
+        if real_data_mode:
+            print("  股票数量: (from files)")
+            print("  时间跨度: (from files)")
+            print("  因子数量: (from files)")
+        else:
+            print(f"  股票数量: {self.config.NUM_STOCKS}")
+            print(f"  时间跨度: {self.config.NUM_DAYS} 交易日")
+            print(f"  因子数量: {self.config.NUM_FACTORS}")
+        print(f"  每次选择: {self.config.TARGET_SIZE} 个因子")
+        print(f"  更新频率: 每月 ({self.config.UPDATE_FREQUENCY} 交易日)")
+        print(f"  滚动窗口: {self.config.ROLLING_WINDOW} 天")
+        print(f"  年化天数: {self._resolve_global_annualization_days():.0f} (from evaluation_config.yaml)")
+        if real_data_mode:
+            print("  数据来源: real_data_files")
+            print(f"  daily_returns: {getattr(self.config, 'REAL_DATA_DAILY_RETURNS_FILE', '')}")
+            print(f"  factors_dir: {getattr(self.config, 'REAL_DATA_FACTORS_DIR', '')}")
+            if getattr(self.config, "REAL_DATA_POOL_FILE", None):
+                print(f"  pool_file: {getattr(self.config, 'REAL_DATA_POOL_FILE')}")
+        elif hasattr(self.config, "STOCK_RETURN_MU") and hasattr(self.config, "STOCK_RETURN_SIGMA"):
+            print(f"  收益率mu/sigma: {self.config.STOCK_RETURN_MU:.6f}/{self.config.STOCK_RETURN_SIGMA:.6f}")
+        if (not real_data_mode) and hasattr(self.config, "TRANSITION_PROBS"):
+            print(f"  转移概率 good->good: {self.config.TRANSITION_PROBS['good']['good']:.2f}")
+        print(
+            f"  数据切分 train/val/test: "
+            f"{self.config.TRAIN_RATIO:.0%}/{self.config.VALIDATION_RATIO:.0%}/{self.config.TEST_RATIO:.0%}"
+        )
+        asof_on = bool(getattr(self.config, "ENABLE_ASOF_FILTER", False))
+        print(f"  as-of过滤: {asof_on}")
+        print(f"  评估模式: {self.config.EVAL_MODE}")
+        print()
+
+        print("1. 生成测试数据...")
+        split_info, sim_export_files, data_time = self._prepare_data()
         print(f"   数据生成完成, 耗时: {data_time:.2f}秒")
         print()
 
@@ -111,10 +179,11 @@ class FactorLibraryIterationEngine:
         self.selector = BayesianSelectorV2(verbose=False)
         self.selector.add_factors(self.factors)
         print(f"   已添加 {len(self.factors)} 个因子")
+        print(f"   年化天数(统一配置): {self.selector.annualization_days:.0f}")
         print()
 
         print("3. 运行多轮选择测试...")
-        min_start_day = max(100, self.config.ROLLING_WINDOW + 20)
+        min_start_day = self._resolve_min_start_day()
         eval_mode = getattr(self.config, "EVAL_MODE", "strict_holdout")
         if eval_mode == "strict_holdout":
             iter_end_idx = split_info["train_end_idx"]
@@ -128,6 +197,7 @@ class FactorLibraryIterationEngine:
             update_points = update_points[: self.config.NUM_TEST_ROUNDS]
 
         print(f"   将进行 {len(update_points)} 轮选择测试")
+        print(f"   最早起始轮次索引(min_start_day): {min_start_day}")
         print()
 
         all_selection_results = []
@@ -137,6 +207,10 @@ class FactorLibraryIterationEngine:
         prev_selection_result = None
         early_stop_triggered = False
         early_stop_round = None
+        use_asof_filter = bool(getattr(self.config, "ENABLE_ASOF_FILTER", False))
+        asof_filter_ref = getattr(self.config, "ASOF_FILTER_REF_DATE", None)
+        if use_asof_filter and asof_filter_ref is None:
+            asof_filter_ref = self.dates[-1]
 
         for i, update_day in enumerate(update_points):
             print(f"   第{i+1}轮选择 (日期: {self.dates[update_day]})...")
@@ -187,7 +261,7 @@ class FactorLibraryIterationEngine:
                     performance_data=performance_data,
                     alpha_beta_before=alpha_beta_before,
                     update_selected_ids=prev_selection_result.selected_factors,
-                    lookback_days=20,
+                    lookback_days=int(self.selector.config.time_windows.get("evaluation", {}).get("selected_long", 20)),
                 )
                 all_update_results.append(update_result)
             else:
@@ -196,12 +270,17 @@ class FactorLibraryIterationEngine:
             round_time = time.time() - round_start
 
             all_selection_results.append(selection_result)
+            if use_asof_filter:
+                asof_date = asof_filter_ref if asof_filter_ref is not None else self.dates[-1]
+            else:
+                asof_date = None
 
             if eval_mode == "strict_holdout":
                 oos_current = self._evaluate_oos_library_on_date_range(
                     selection_result.selected_factors,
                     start_date=split_info["val_start_date"],
                     end_date=split_info["val_end_date"],
+                    asof_date=asof_date,
                 )
             else:
                 oos_current = self._evaluate_oos_library_forward(
@@ -209,6 +288,7 @@ class FactorLibraryIterationEngine:
                     start_day=update_day + 1,
                     horizon=self.config.OOS_HORIZON,
                     end_cap_day=iter_end_idx,
+                    asof_date=asof_date,
                 )
             if prev_selected_ids is not None:
                 if eval_mode == "strict_holdout":
@@ -216,6 +296,7 @@ class FactorLibraryIterationEngine:
                         prev_selected_ids,
                         start_date=split_info["val_start_date"],
                         end_date=split_info["val_end_date"],
+                        asof_date=asof_date,
                     )
                 else:
                     oos_prev = self._evaluate_oos_library_forward(
@@ -223,6 +304,7 @@ class FactorLibraryIterationEngine:
                         start_day=update_day + 1,
                         horizon=self.config.OOS_HORIZON,
                         end_cap_day=iter_end_idx,
+                        asof_date=asof_date,
                     )
                 oos_excess_vs_prevlib = oos_current["ls_mean"] - oos_prev["ls_mean"]
             else:
@@ -238,6 +320,7 @@ class FactorLibraryIterationEngine:
             round_metric = {
                 "round": i + 1,
                 "date": self.dates[update_day],
+                "asof_date": asof_date,
                 "overlap_prev": overlap_prev,
                 "turnover": turnover,
                 "oos_ic_mean": oos_current["ic_mean"],
@@ -261,6 +344,7 @@ class FactorLibraryIterationEngine:
                     selection_result.selected_factors,
                     split_info["test_start_date"],
                     split_info["test_end_date"],
+                    asof_date=asof_date,
                 )
                 round_metric["test_oos_icir"] = test_eval_current["icir"]
                 round_metric["test_oos_sharpe"] = test_eval_current["sharpe"]
@@ -310,6 +394,8 @@ class FactorLibraryIterationEngine:
                     f"LS均值={round_metric['oos_ls_mean']:.6f}, "
                     f"Sharpe={round_metric['oos_sharpe']:.3f}"
                 )
+            if asof_date is not None:
+                print(f"     as-of可得日期: {asof_date}")
             if prev_selected_ids is not None:
                 print(
                     f"     稳定性: overlap={round_metric['overlap_prev']:.1%}, "
@@ -339,6 +425,14 @@ class FactorLibraryIterationEngine:
         results["early_stop"] = {"triggered": early_stop_triggered, "round": early_stop_round}
         results["dataset_split"] = split_info
         results["eval_mode"] = eval_mode
+        if sim_export_files:
+            results["sim_data_export"] = sim_export_files
+        if hasattr(self, "_asof_window_start") and hasattr(self, "_asof_window_end"):
+            results["data_window"] = {
+                "window_start": getattr(self, "_asof_window_start", None),
+                "window_end": getattr(self, "_asof_window_end", None),
+                "effective_asof_date": getattr(self, "_effective_asof_date", None),
+            }
 
         final_idx, final_reason = self._resolve_final_library_index(
             all_selection_results=all_selection_results,
@@ -391,19 +485,27 @@ class FactorLibraryIterationEngine:
             "stock_return_sigma": self.config.STOCK_RETURN_SIGMA,
             "transition_good_to_good": self.config.TRANSITION_PROBS["good"]["good"],
             "horizon_days": self.config.ROLLING_WINDOW,
-            "annual_days": getattr(self.config, "ANNUAL_DAYS", 250),
+            "annualization_days": self.selector.annualization_days,
             "train_ratio": self.config.TRAIN_RATIO,
             "validation_ratio": self.config.VALIDATION_RATIO,
             "test_ratio": self.config.TEST_RATIO,
+            "split_gap_days": split_info.get("gap_days"),
+            "enable_asof_filter": bool(getattr(self.config, "ENABLE_ASOF_FILTER", False)),
             "eval_mode": eval_mode,
         }
         if split_info["val_size"] > 0:
             results["final_eval_validation"] = self._evaluate_oos_library_on_date_range(
-                final_library_ids, split_info["val_start_date"], split_info["val_end_date"]
+                final_library_ids,
+                split_info["val_start_date"],
+                split_info["val_end_date"],
+                asof_date=self.dates[-1] if use_asof_filter else None,
             )
         if split_info["test_size"] > 0:
             results["final_eval_test"] = self._evaluate_oos_library_on_date_range(
-                final_library_ids, split_info["test_start_date"], split_info["test_end_date"]
+                final_library_ids,
+                split_info["test_start_date"],
+                split_info["test_end_date"],
+                asof_date=self.dates[-1] if use_asof_filter else None,
             )
         if all_selection_results:
             last_selection = all_selection_results[-1]
@@ -417,12 +519,14 @@ class FactorLibraryIterationEngine:
                 list(last_selection.selected_factors),
                 split_info["val_start_date"],
                 split_info["val_end_date"],
+                asof_date=self.dates[-1] if use_asof_filter else None,
             )
             if split_info["test_size"] > 0:
                 results["last_round_eval_test"] = self._evaluate_oos_library_on_date_range(
                     list(last_selection.selected_factors),
                     split_info["test_start_date"],
                     split_info["test_end_date"],
+                    asof_date=self.dates[-1] if use_asof_filter else None,
                 )
 
         self._print_final_results(results)
@@ -475,7 +579,7 @@ class FactorLibraryIterationEngine:
         return counts
 
     def _evaluate_oos_library_on_date_range(
-        self, selected_ids: List[str], start_date: str, end_date: str
+        self, selected_ids: List[str], start_date: str, end_date: str, asof_date: str = None
     ) -> Dict[str, float]:
         if not selected_ids:
             return {
@@ -491,6 +595,8 @@ class FactorLibraryIterationEngine:
                 continue
             perf = factor.get_performance_in_range(start_date, end_date)
             for p in perf:
+                if asof_date is not None and p.date > asof_date:
+                    continue
                 if p.ic is not None:
                     ic_values.append(p.ic)
                 if p.ls_return is not None:
@@ -508,7 +614,7 @@ class FactorLibraryIterationEngine:
         icir_raw = float(ic_mean / (np.std(ic_arr) + 1e-8))
         ls_mean_raw = float(np.mean(ls_arr))
         sharpe_raw = float(ls_mean_raw / (np.std(ls_arr) + 1e-8))
-        annual_days = float(getattr(self.config, "ANNUAL_DAYS", 250))
+        annual_days = float(getattr(self.selector, "annualization_days", 250.0))
         horizon_days = float(max(getattr(self.config, "ROLLING_WINDOW", 5), 1))
         periods_per_year = annual_days / horizon_days
         icir = float(icir_raw * np.sqrt(periods_per_year))
@@ -528,7 +634,7 @@ class FactorLibraryIterationEngine:
         }
 
     def _evaluate_oos_library_forward(
-        self, selected_ids: List[str], start_day: int, horizon: int, end_cap_day: int
+        self, selected_ids: List[str], start_day: int, horizon: int, end_cap_day: int, asof_date: str = None
     ) -> Dict[str, float]:
         if start_day >= len(self.dates) or not selected_ids:
             return {"ic_mean": 0.0, "icir": 0.0, "ls_mean": 0.0, "sharpe": 0.0, "win_rate": 0.0}
@@ -539,6 +645,7 @@ class FactorLibraryIterationEngine:
             selected_ids=selected_ids,
             start_date=self.dates[start_day],
             end_date=self.dates[end_day],
+            asof_date=asof_date,
         )
 
     def _build_dataset_split(self, total_days: int) -> Dict[str, object]:
@@ -550,24 +657,52 @@ class FactorLibraryIterationEngine:
         if train_ratio + val_ratio + test_ratio > 1.000001:
             raise ValueError("TRAIN/VALIDATION/TEST比例之和不能超过1")
 
-        train_size = int(total_days * train_ratio)
-        val_size = int(total_days * val_ratio)
-        used = train_size + val_size
-        test_size = int(total_days * test_ratio)
-        # 优先保证train+val按比例；剩余全部给test
-        if used + test_size < total_days:
-            test_size = total_days - used
+        gap_days = int(
+            getattr(self.config, "SPLIT_GAP_DAYS", self.config.ROLLING_WINDOW)
+            if getattr(self.config, "SPLIT_GAP_DAYS", None) is not None
+            else self.config.ROLLING_WINDOW
+        )
+        gap_days = max(gap_days, 0)
+
+        gap_1 = gap_days if val_ratio > 0 else 0
+        gap_2 = gap_days if test_ratio > 0 else 0
+        effective_days = total_days - gap_1 - gap_2
+        if effective_days < 3:
+            raise ValueError("样本不足：扣除split gap后可用天数过少")
+
+        train_size = int(effective_days * train_ratio)
+        val_size = int(effective_days * val_ratio)
+        if test_ratio <= 0:
+            test_size = 0
+            remainder = effective_days - train_size - val_size
+            if remainder > 0:
+                val_size += remainder
+        else:
+            used = train_size + val_size
+            test_size = int(effective_days * test_ratio)
+            if used + test_size < effective_days:
+                test_size = effective_days - used
         if train_size < 1 or val_size < 1:
             raise ValueError("样本切分后train/validation至少各需要1天")
 
         train_end = train_size - 1
-        val_start = train_end + 1
+        val_start = train_end + 1 + gap_days
         val_end = val_start + val_size - 1
         if val_end >= total_days:
-            val_end = total_days - 1
-        test_start = val_end + 1
-        test_end = total_days - 1 if test_start < total_days else None
-        actual_test_size = 0 if test_end is None else (test_end - test_start + 1)
+            raise ValueError("样本不足：请减小TRAIN/VAL比例或减小SPLIT_GAP_DAYS")
+        if test_size <= 0:
+            test_start = None
+            test_end = None
+            actual_test_size = 0
+        else:
+            test_start = val_end + 1 + gap_days
+            if test_start >= total_days:
+                test_start = None
+                test_end = None
+                actual_test_size = 0
+            else:
+                test_end = min(total_days - 1, test_start + test_size - 1)
+                actual_test_size = test_end - test_start + 1
 
         return {
             "train_start_idx": 0,
@@ -579,12 +714,13 @@ class FactorLibraryIterationEngine:
             "train_size": train_end + 1,
             "val_size": val_end - val_start + 1,
             "test_size": actual_test_size,
+            "gap_days": gap_days,
             "train_start_date": self.dates[0],
             "train_end_date": self.dates[train_end],
             "val_start_date": self.dates[val_start],
             "val_end_date": self.dates[val_end],
-            "test_start_date": self.dates[test_start] if test_end is not None else None,
-            "test_end_date": self.dates[test_end] if test_end is not None else None,
+            "test_start_date": self.dates[test_start] if test_start is not None and test_end is not None else None,
+            "test_end_date": self.dates[test_end] if test_start is not None and test_end is not None else None,
         }
 
     @staticmethod
@@ -675,11 +811,12 @@ class FactorLibraryIterationEngine:
         performance_data = {}
         icir_by_factor = {}
         ls_by_factor = {}
+        lookback = int(self.selector.config.time_windows.get("evaluation", {}).get("selected_long", 20))
 
         for fid in selected_ids:
             factor = self.selector.factors.get(fid)
             if factor:
-                recent_perf = factor.get_recent_performance(20, self.dates[day])
+                recent_perf = factor.get_recent_performance(lookback, self.dates[day])
                 if recent_perf:
                     ic_values = [p.ic for p in recent_perf]
                     ls_values = [p.ls_return for p in recent_perf]
@@ -742,7 +879,7 @@ class FactorLibraryIterationEngine:
             "good_recall": good_recall,
             "avg_good_recall": np.mean(good_recall),
             "update_success_rate": update_success,
-            "avg_update_success_rate": np.mean(update_success),
+            "avg_update_success_rate": float(np.mean(update_success)) if update_success else 0.0,
             "factor_alpha_mean": np.mean(alpha_changes),
             "factor_beta_mean": np.mean(beta_changes),
         }
@@ -864,6 +1001,7 @@ class FactorLibraryIterationEngine:
             rows.append({
                 "round": r,
                 "date": m.get("date"),
+                "asof_date": m.get("asof_date"),
                 "stability_pass": bool(m.get("stability_pass", False)),
                 "is_selected_round": (selected_round == r),
                 "is_last_round": (last_round == r),

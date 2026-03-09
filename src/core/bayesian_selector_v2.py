@@ -47,7 +47,11 @@ class BayesianSelectorV2:
     5. 完整的贝叶斯更新逻辑
     """
     
-    def __init__(self, config_path: Optional[str] = None, verbose: bool = True):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        verbose: bool = True,
+    ):
         """
         初始化新版选择器
         
@@ -65,16 +69,23 @@ class BayesianSelectorV2:
             self.config_manager.load_config()
         
         self.config: EvaluationConfig = self.config_manager.config
+        self.annualization_days = float(getattr(self.config, "annualization_days", 250))
+        self.ic_min_periods = int(self.config.time_windows.get("ic_calculation", {}).get("min_periods", 10))
         
         # 初始化子模块
         self.correlation_calculator = CorrelationCalculator(
             self.config.correlation
         )
         
+        marginal_cfg = dict(self.config.marginal_contribution or {})
+        # 强制与全局年化天数一致，避免口径漂移
+        marginal_cfg["annualization_factor"] = self.annualization_days
+
         self.marginal_evaluator = MarginalContributionEvaluator({
             'correlation': self.config.correlation,
-            'portfolio': self.config.marginal_contribution,
-            'thresholds': self.config.success_thresholds['unselected']
+            'portfolio': marginal_cfg,
+            'thresholds': self.config.success_thresholds['unselected'],
+            'scoring': marginal_cfg.get('scoring', {}),
         })
         
         # 数据存储
@@ -89,6 +100,9 @@ class BayesianSelectorV2:
     
     def add_factor(self, factor: EnhancedFactor):
         """添加因子"""
+        factor.config = factor.config or {}
+        factor.config["annualization_days"] = self.annualization_days
+        factor.config["ic_min_periods"] = self.ic_min_periods
         self.factors[factor.id] = factor
     
     def add_factors(self, factors: List[EnhancedFactor]):
@@ -210,9 +224,13 @@ class BayesianSelectorV2:
             # 批量评估边际贡献
             unselected_factors = [self.factors[fid] for fid in unselected_ids]
             
+            # 使用配置驱动的没选中因子评估窗口
+            eval_windows = self.config.time_windows.get('evaluation', {})
+            unselected_lookback = int(eval_windows.get('unselected_long', 40))
+
             # 使用边际贡献评估器
             marginal_results = self.marginal_evaluator.evaluate_multiple_factors(
-                unselected_factors, selected_factors, current_date, lookback_days=60
+                unselected_factors, selected_factors, current_date, lookback_days=unselected_lookback
             )
             
             update_stats['marginal_evaluations'] = len(marginal_results)
@@ -266,6 +284,14 @@ class BayesianSelectorV2:
     def _calculate_factor_scores(self, current_date: str) -> Dict[str, float]:
         """计算因子综合得分"""
         scores = {}
+        blend_cfg = self.config.bayesian.get('selection_blend', {})
+        aggregate_w = float(blend_cfg.get('aggregate_score', 0.7))
+        bayesian_w = float(blend_cfg.get('bayesian_score', 0.3))
+        w_sum = aggregate_w + bayesian_w
+        if w_sum <= 0:
+            aggregate_w, bayesian_w = 0.7, 0.3
+        else:
+            aggregate_w, bayesian_w = aggregate_w / w_sum, bayesian_w / w_sum
         
         for fid, factor in self.factors.items():
             # 获取多时间窗口统计
@@ -278,8 +304,8 @@ class BayesianSelectorV2:
             # 贝叶斯得分 (Thompson Sampling)
             bayesian_score = np.random.beta(factor.alpha, factor.beta)
             
-            # 综合得分 = 综合得分 * 0.7 + 贝叶斯得分 * 0.3
-            final_score = score * 0.7 + bayesian_score * 0.3
+            # 综合得分 = 聚合打分 + 贝叶斯打分（权重由配置控制）
+            final_score = score * aggregate_w + bayesian_score * bayesian_w
             
             scores[fid] = {
                 'final_score': final_score,
@@ -312,7 +338,8 @@ class BayesianSelectorV2:
         lookback = self.config.time_windows['evaluation'].get('selected_short', 10)
         recent_perf = factor.get_recent_performance(lookback, current_date)
         
-        if len(recent_perf) < 5:  # 最少5个有效数据
+        min_points = int(self.config.time_windows.get('ic_calculation', {}).get('min_periods', 10))
+        if len(recent_perf) < min_points:
             return False
         
         # 计算指标
@@ -341,6 +368,7 @@ class BayesianSelectorV2:
             reverse=True
         )[:top_n]
         
+        selected_long = int(self.config.time_windows.get('evaluation', {}).get('selected_long', 20))
         stats = []
         for factor in factors_sorted:
             stats.append({
@@ -350,7 +378,7 @@ class BayesianSelectorV2:
                 'beta': factor.beta,
                 'success_rate': factor.get_success_rate(),
                 'performance_count': len(factor.performance_history),
-                'recent_icir': factor.calculate_icir(factor.get_recent_performance(20)) if factor.performance_history else 0.0
+                'recent_icir': factor.calculate_icir(factor.get_recent_performance(selected_long)) if factor.performance_history else 0.0
             })
         
         return stats

@@ -74,6 +74,14 @@ class EnhancedFactor:
         
         # 缓存计算结果
         self._cache = {}
+
+    def _annualization_days(self) -> float:
+        """年化天数（统一从配置读取）"""
+        return float(self.config.get("annualization_days", 250))
+
+    def _ic_min_periods(self) -> int:
+        """IC/ICIR最小样本数（统一从配置读取）"""
+        return int(self.config.get("ic_min_periods", 10))
     
     def add_daily_performance(self, date: str, **kwargs):
         """添加日度表现数据"""
@@ -131,7 +139,7 @@ class EnhancedFactor:
         # 提取有效IC值
         ic_values = [p.ic for p in performances if p.ic is not None]
         
-        if len(ic_values) < 5:  # 最少5个有效值
+        if len(ic_values) < self._ic_min_periods():  # 至少满足最小样本数
             return 0.0
         
         ic_mean = np.mean(ic_values)
@@ -172,7 +180,7 @@ class EnhancedFactor:
         std_return = np.std(returns_array)
         
         # 夏普比率 (假设无风险利率为0)
-        sharpe = mean_return / (std_return + 1e-8) * np.sqrt(252)  # 年化
+        sharpe = mean_return / (std_return + 1e-8) * np.sqrt(self._annualization_days())  # 年化
         
         # 胜率
         win_rate = np.sum(returns_array > 0) / len(returns_array)
@@ -289,8 +297,8 @@ class EnhancedFactor:
     
     def _normalize_ls_return(self, ls_return: float) -> float:
         """归一化多空收益"""
-        # 日度收益，年化约 日收益*252
-        annualized = ls_return * 252
+        # 日度收益，年化约 日收益*annualization_days
+        annualized = ls_return * self._annualization_days()
         return min(max(annualized / 0.5, 0.0), 1.0)  # 年化50%得1.0
     
     def _normalize_sharpe(self, sharpe: float) -> float:

@@ -4,9 +4,12 @@
 将测试用的数据生成逻辑从 tests 中抽离，便于未来替换为真实数据源。
 """
 
+import csv
+import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -38,6 +41,8 @@ class LatentFactorSimulationConfig:
     anchor_reversion_prob: Dict[str, float]
     random_seed: int = 42
     start_date: str = "2014-01-01"
+    end_date: Optional[str] = None
+    show_progress: bool = False
 
 
 class LatentFactorDataSimulator:
@@ -46,13 +51,87 @@ class LatentFactorDataSimulator:
     def __init__(self, config: LatentFactorSimulationConfig):
         self.config = config
         np.random.seed(config.random_seed)
+        self._warned_no_tqdm = False
+        self._factor_values_map: Dict[str, np.ndarray] = {}
+        self._latest_dates: Optional[List[str]] = None
+        self._latest_stock_returns: Optional[np.ndarray] = None
+        self._latest_forward_returns: Optional[np.ndarray] = None
 
-    def generate_dates(self, num_days: int = None, start_date: str = None) -> List[str]:
-        """生成交易日历（跳过周末）。"""
+    def _iter_progress(
+        self,
+        iterable: Iterable,
+        desc: str,
+        total: Optional[int] = None,
+    ) -> Iterable:
+        if not bool(getattr(self.config, "show_progress", False)):
+            return iterable
+        try:
+            from tqdm.auto import tqdm
+            return tqdm(iterable, desc=desc, total=total, leave=False)
+        except Exception:
+            if not self._warned_no_tqdm:
+                print("[progress] 未检测到 tqdm，使用文本进度输出（可安装 tqdm 获得更好显示）。")
+                self._warned_no_tqdm = True
+
+            if total is None:
+                try:
+                    total = len(iterable)  # type: ignore[arg-type]
+                except Exception:
+                    total = None
+
+            def _fallback_generator():
+                if total is None:
+                    for idx, item in enumerate(iterable, start=1):
+                        if idx == 1 or idx % 1000 == 0:
+                            print(f"[progress] {desc}: {idx} items")
+                        yield item
+                    print(f"[progress] {desc}: done")
+                    return
+
+                step = max(total // 10, 1)
+                next_mark = step
+                seen = 0
+                for item in iterable:
+                    seen += 1
+                    if seen == 1 or seen >= next_mark or seen == total:
+                        pct = 100.0 * seen / max(total, 1)
+                        print(f"[progress] {desc}: {seen}/{total} ({pct:.1f}%)")
+                        while next_mark <= seen:
+                            next_mark += step
+                    yield item
+                if seen < total:
+                    print(f"[progress] {desc}: {seen}/{total}")
+                print(f"[progress] {desc}: done")
+
+            return _fallback_generator()
+
+    def generate_dates(
+        self,
+        num_days: int = None,
+        start_date: str = None,
+        end_date: str = None,
+    ) -> List[str]:
+        """生成交易日历（跳过周末）。
+
+        规则:
+        - 若给定 end_date（或配置中存在 end_date），按 [start_date, end_date] 闭区间生成。
+        - 否则按 num_days 生成。
+        """
         n = num_days if num_days is not None else self.config.num_days
         s = start_date if start_date is not None else self.config.start_date
+        e = end_date if end_date is not None else self.config.end_date
         dates = []
         current = datetime.strptime(s, "%Y-%m-%d")
+        if e is not None:
+            end_dt = datetime.strptime(e, "%Y-%m-%d")
+            if end_dt < current:
+                raise ValueError("end_date 不能早于 start_date")
+            while current <= end_dt:
+                if current.weekday() < 5:
+                    dates.append(current.strftime("%Y-%m-%d"))
+                current += timedelta(days=1)
+            return dates
+
         while len(dates) < n:
             if current.weekday() < 5:
                 dates.append(current.strftime("%Y-%m-%d"))
@@ -173,6 +252,9 @@ class LatentFactorDataSimulator:
         dates = self.generate_dates()
         stock_returns = self.generate_stock_returns()
         forward_returns = self.calculate_forward_returns_ex_t(stock_returns, self.config.rolling_window)
+        self._latest_dates = dates
+        self._latest_stock_returns = stock_returns
+        self._latest_forward_returns = forward_returns
         return dates, stock_returns, forward_returns
 
     def generate_factors(self, dates: List[str], forward_returns: np.ndarray) -> List[EnhancedFactor]:
@@ -197,28 +279,24 @@ class LatentFactorDataSimulator:
         n_good = int(self.config.num_factors * self.config.good_ratio)
         n_medium = int(self.config.num_factors * self.config.medium_ratio)
         n_bad = self.config.num_factors - n_good - n_medium
-
-        for i in range(n_good):
-            factor = EnhancedFactor(factor_id=f"good_{i:03d}", expression=f"GOOD_FACTOR_{i}", topic="good")
-            factor.alpha, factor.beta = 8.0, 2.0
-            self._add_factor_performance(
-                factor, "good", dates, forward_returns, n_periods, phase_boundaries, phase_transition_probs
+        factor_specs = (
+            [("good", i, 8.0, 2.0) for i in range(n_good)]
+            + [("medium", i, 5.0, 5.0) for i in range(n_medium)]
+            + [("bad", i, 2.0, 8.0) for i in range(n_bad)]
+        )
+        for topic, i, alpha, beta in self._iter_progress(
+            factor_specs,
+            desc="模拟因子暴露与历史表现",
+            total=len(factor_specs),
+        ):
+            factor = EnhancedFactor(
+                factor_id=f"{topic}_{i:03d}",
+                expression=f"{topic.upper()}_FACTOR_{i}",
+                topic=topic,
             )
-            factors.append(factor)
-
-        for i in range(n_medium):
-            factor = EnhancedFactor(factor_id=f"medium_{i:03d}", expression=f"MEDIUM_FACTOR_{i}", topic="medium")
-            factor.alpha, factor.beta = 5.0, 5.0
+            factor.alpha, factor.beta = alpha, beta
             self._add_factor_performance(
-                factor, "medium", dates, forward_returns, n_periods, phase_boundaries, phase_transition_probs
-            )
-            factors.append(factor)
-
-        for i in range(n_bad):
-            factor = EnhancedFactor(factor_id=f"bad_{i:03d}", expression=f"BAD_FACTOR_{i}", topic="bad")
-            factor.alpha, factor.beta = 2.0, 8.0
-            self._add_factor_performance(
-                factor, "bad", dates, forward_returns, n_periods, phase_boundaries, phase_transition_probs
+                factor, topic, dates, forward_returns, n_periods, phase_boundaries, phase_transition_probs
             )
             factors.append(factor)
 
@@ -257,7 +335,11 @@ class LatentFactorDataSimulator:
         reversion_prob = self.config.anchor_reversion_prob[anchor_label]
 
         states = [self._sample_state(init_probs)]
-        for t in range(1, n_periods):
+        for t in self._iter_progress(
+            range(1, n_periods),
+            desc=f"状态转移[{anchor_label}]",
+            total=max(n_periods - 1, 0),
+        ):
             prev = states[-1]
             transition_probs = default_transition_probs
             if phase_boundaries is not None and phase_transition_probs:
@@ -293,6 +375,7 @@ class LatentFactorDataSimulator:
             ic_std_series[t] = std_t
 
         factor_values = self.generate_factor_values(forward_returns, target_ic_series, ic_std_series)
+        self._factor_values_map[factor.id] = factor_values
         ic_series = self.calculate_factor_ic(factor_values, forward_returns)
         ls_returns = self.calculate_factor_ls_return(factor_values, forward_returns)
 
@@ -315,4 +398,159 @@ class LatentFactorDataSimulator:
             'anchor_label': anchor_label,
             'state_counts': state_counts,
             'state_ratios': {k: v / max(len(latent_states), 1) for k, v in state_counts.items()}
+        }
+
+    @staticmethod
+    def _build_stock_codes(n_stocks: int) -> List[str]:
+        return [f"S{i:06d}" for i in range(n_stocks)]
+
+    def export_as_real_data_format(
+        self,
+        output_root: str = "data",
+        pool_name: str = "all_stocks",
+        include_forward_returns: bool = True,
+    ) -> Dict[str, str]:
+        """
+        将最近一次模拟数据按“真实数据接入格式”写盘（CSV）。
+
+        目录结构：
+        - {output_root}/base/daily_returns.csv
+        - {output_root}/factors/{factor_id}.csv
+        - {output_root}/pools/{pool_name}.csv
+        - {output_root}/labels/forward_returns_h{window}.csv (可选)
+        - {output_root}/meta/simulation_manifest.json
+        """
+        if self._latest_dates is None or self._latest_stock_returns is None or self._latest_forward_returns is None:
+            raise ValueError("尚未生成市场数据，请先调用 build_market_data()")
+        if not self._factor_values_map:
+            raise ValueError("尚未生成因子暴露，请先调用 generate_factors()/generate_factors_with_regime()")
+
+        os.makedirs(output_root, exist_ok=True)
+        base_dir = os.path.join(output_root, "base")
+        factors_dir = os.path.join(output_root, "factors")
+        pools_dir = os.path.join(output_root, "pools")
+        labels_dir = os.path.join(output_root, "labels")
+        meta_dir = os.path.join(output_root, "meta")
+        os.makedirs(base_dir, exist_ok=True)
+        os.makedirs(factors_dir, exist_ok=True)
+        os.makedirs(pools_dir, exist_ok=True)
+        os.makedirs(meta_dir, exist_ok=True)
+        if include_forward_returns:
+            os.makedirs(labels_dir, exist_ok=True)
+
+        dates = self._latest_dates
+        stock_returns = self._latest_stock_returns
+        forward_returns = self._latest_forward_returns
+        n_stocks, n_days = stock_returns.shape
+        stock_codes = self._build_stock_codes(n_stocks)
+        n_signals = forward_returns.shape[1]
+
+        daily_returns_path = os.path.join(base_dir, "daily_returns.csv")
+        with open(daily_returns_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["end_date", "stock_code", "rtn"])
+            writer.writeheader()
+            for day_idx in self._iter_progress(
+                range(n_days),
+                desc="写出base/daily_returns",
+                total=n_days,
+            ):
+                d = dates[day_idx]
+                for stock_idx, code in enumerate(stock_codes):
+                    writer.writerow({
+                        "end_date": d,
+                        "stock_code": code,
+                        "rtn": float(stock_returns[stock_idx, day_idx]),
+                    })
+
+        pool_path = os.path.join(pools_dir, f"{pool_name}.csv")
+        with open(pool_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["end_date", "stock_code", "in_pool"])
+            writer.writeheader()
+            for d in self._iter_progress(
+                dates,
+                desc="写出pools",
+                total=len(dates),
+            ):
+                for code in stock_codes:
+                    writer.writerow({
+                        "end_date": d,
+                        "stock_code": code,
+                        "in_pool": 1,
+                    })
+
+        factor_file_count = 0
+        factor_items = list(self._factor_values_map.items())
+        for factor_id, values in self._iter_progress(
+            factor_items,
+            desc="写出factors",
+            total=len(factor_items),
+        ):
+            out_path = os.path.join(factors_dir, f"{factor_id}.csv")
+            with open(out_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["end_date", "stock_code", "score"])
+                writer.writeheader()
+                for signal_idx in range(min(n_signals, values.shape[1])):
+                    d = dates[signal_idx]
+                    for stock_idx, code in enumerate(stock_codes):
+                        writer.writerow({
+                            "end_date": d,
+                            "stock_code": code,
+                            "score": float(values[stock_idx, signal_idx]),
+                        })
+            factor_file_count += 1
+
+        labels_path = ""
+        if include_forward_returns:
+            labels_path = os.path.join(labels_dir, f"forward_returns_h{self.config.rolling_window}.csv")
+            with open(labels_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["end_date", "label_start_date", "label_end_date", "stock_code", "forward_rtn"],
+                )
+                writer.writeheader()
+                for signal_idx in self._iter_progress(
+                    range(n_signals),
+                    desc="写出labels",
+                    total=n_signals,
+                ):
+                    signal_date = dates[signal_idx]
+                    label_start = dates[signal_idx + 1]
+                    label_end = dates[signal_idx + self.config.rolling_window]
+                    for stock_idx, code in enumerate(stock_codes):
+                        writer.writerow({
+                            "end_date": signal_date,
+                            "label_start_date": label_start,
+                            "label_end_date": label_end,
+                            "stock_code": code,
+                            "forward_rtn": float(forward_returns[stock_idx, signal_idx]),
+                        })
+
+        manifest_path = os.path.join(meta_dir, "simulation_manifest.json")
+        manifest = {
+            "start_date": dates[0] if dates else None,
+            "end_date": dates[-1] if dates else None,
+            "num_days": n_days,
+            "generation_mode": "date_range" if self.config.end_date is not None else "num_days",
+            "config_start_date": self.config.start_date,
+            "config_end_date": self.config.end_date,
+            "config_num_days": self.config.num_days,
+            "num_stocks": n_stocks,
+            "num_factors": factor_file_count,
+            "rolling_window": self.config.rolling_window,
+            "daily_returns_file": daily_returns_path,
+            "pool_file": pool_path,
+            "factors_dir": factors_dir,
+            "labels_file": labels_path if include_forward_returns else None,
+            "time_alignment": "signal x(t,end_of_day) -> label R(t+1->t+n), excludes t-day return",
+        }
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+        return {
+            "output_root": output_root,
+            "daily_returns_file": daily_returns_path,
+            "pool_file": pool_path,
+            "factors_dir": factors_dir,
+            "labels_file": labels_path if include_forward_returns else "",
+            "manifest_file": manifest_path,
         }

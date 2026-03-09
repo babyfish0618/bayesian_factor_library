@@ -2,6 +2,8 @@
 # 版本: 1.0.0
 # 日期: 2026-03-01
 
+annualization_days: 250   # 年化天数（全局统一，替代代码中的硬编码252）
+
 # ==================== 时间窗口配置 ====================
 time_windows:
   # 选择因子时的多时间尺度
@@ -14,13 +16,11 @@ time_windows:
   evaluation:
     selected_short: 10     # 选中因子评估窗口 (较短)
     selected_long: 20      # 选中因子评估窗口 (较长)
-    unselected_short: 20   # 没选中因子评估窗口 (较短)
-    unselected_long: 40    # 没选中因子评估窗口 (较长，更严格)
+    unselected_long: 40    # 没选中因子边际贡献评估窗口 (较长，更严格)
   
   # IC计算相关
   ic_calculation:
-    min_periods: 10        # 最小有效天数
-    rolling_window: 20     # 滚动计算窗口
+    min_periods: 10        # IC/ICIR最小样本数（不足则返回0）
 
 # ==================== 指标权重配置 ====================
 indicator_weights:
@@ -30,36 +30,17 @@ indicator_weights:
     ls_return: 0.3         # 多空收益权重
     rank_percentile: 0.2   # 排名权重
     stability: 0.1         # 稳定性权重
-  
-  # 评估成功时的指标权重
-  evaluation:
-    selected:
-      icir: 0.5
-      ls_return: 0.3
-      rank_percentile: 0.2
-      # 权重和: 1.0
-    unselected:
-      icir: 0.6            # 没选中因子更看重ICIR
-      ls_return: 0.2
-      rank_percentile: 0.1
-      marginal_contrib: 0.1  # 边际贡献权重
-      # 权重和: 1.0
 
 # ==================== 成功阈值配置 ====================
 success_thresholds:
   # 选中因子阈值 (相对宽松)
   selected:
     icir: 0.8              # ICIR > 0.8
-    ls_return_annual: 0.05  # 年化多空收益 > 5%
     rank_percentile: 0.7    # 排名在前70%
     win_rate: 0.55          # 胜率 > 55%
   
   # 没选中因子阈值 (非常严格)
   unselected:
-    icir: 1.5              # ICIR > 1.5 (几乎2倍)
-    ls_return_annual: 0.10  # 年化多空收益 > 10%
-    rank_percentile: 0.5    # 排名在前50%
-    win_rate: 0.60          # 胜率 > 60%
     max_correlation: 0.6    # 与选中因子最大相关性 < 0.6
 
 # ==================== 贝叶斯参数配置 ====================
@@ -71,6 +52,9 @@ bayesian:
     selected_failure: 1.0   # 选中因子失败: β += 1
     unselected_success: 0.5 # 没选中因子成功: α += 0.5 (更谨慎)
     unselected_failure: 0.0 # 没选中因子失败: 不更新 (不轻易惩罚)
+  selection_blend:
+    aggregate_score: 0.7    # 综合打分权重 [当前已使用]
+    bayesian_score: 0.3     # Thompson采样权重 [当前已使用]
 
 # ==================== 相关性计算配置 ====================
 correlation:
@@ -80,29 +64,33 @@ correlation:
 
 # ==================== 边际贡献配置 ====================
 marginal_contribution:
-  simulation_method: "portfolio_optimization"  # portfolio_optimization/correlation_based
-  portfolio_methods:
-    - "equal_weight"        # 等权组合
-    - "icir_weighted"       # ICIR加权
-    - "sharpe_optimized"    # 夏普优化
+  method: "equal_weight"  # 边际贡献内部组合方法
+  annualization_factor: 250  # 组合模拟年化天数（应与annualization_days一致）
   replacement_strategy: "correlation_based"    # correlation_based/effectiveness_based
   improvement_threshold: 0.01  # 最小改善阈值
-
-# ==================== 归一化配置 ====================
-normalization:
-  icir:
-    method: "sigmoid"       # linear/sigmoid/logistic
-    scale_factor: 3.0       # ICIR=3.0时得分≈1.0
-    shift: 0.0
-  
-  ls_return:
-    method: "linear"
-    max_value: 0.50         # 年化50%收益得1.0
-    min_value: -0.20        # 年化-20%收益得0.0
-  
-  rank_percentile:
-    method: "inverse"       # 排名越前得分越高
-    # rank_percentile=0.2 → score=0.8
+  scoring:
+    weights:
+      improvement: 0.4      # 综合得分-边际改善权重 [当前已使用]
+      correlation: 0.3      # 综合得分-相关性权重 [当前已使用]
+      quality: 0.2          # 综合得分-候选质量权重 [当前已使用]
+      feasibility: 0.1      # 综合得分-替换可行性权重 [当前已使用]
+    grade_scores:
+      high: 1.0             # 高档评分 [当前已使用]
+      medium: 0.7           # 中档评分 [当前已使用]
+      low: 0.4              # 低档评分 [当前已使用]
+      fallback: 0.1         # 最低评分 [当前已使用]
+    quality_thresholds:
+      high: 2.0             # ICIR/Sharpe高档阈值 [当前已使用]
+      medium: 1.0           # ICIR/Sharpe中档阈值 [当前已使用]
+      low: 0.5              # ICIR/Sharpe低档阈值 [当前已使用]
+    feasibility_scores:
+      replace: 1.0          # 可替换评分 [当前已使用]
+      no_replace: 0.3       # 不可替换评分 [当前已使用]
+    correlation_low_ratio: 0.5            # 低相关分段比例 [当前已使用]
+    decision_success_score: 0.7           # 判定success的score阈值 [当前已使用]
+    decision_failure_score: 0.3           # 判定failure的score阈值 [当前已使用]
+    decision_failure_improvement: -0.1    # 判定failure的improvement阈值 [当前已使用]
+    decision_corr_fail_multiplier: 1.2    # 相关性过高判定倍数 [当前已使用]
 
 # ==================== 调试与日志配置 ====================
 debug:

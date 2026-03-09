@@ -55,7 +55,7 @@
 ### 5.1 IC
 - 横截面IC: `IC_t = corr_i(x_{i,t}, R_{i,t+1->t+n})`
 - `ICIR_raw = mean(IC_t)/std(IC_t)`
-- `ICIR_annual = ICIR_raw * sqrt(ANNUAL_DAYS / n)`
+- `ICIR_annual = ICIR_raw * sqrt(annualization_days / n)`
 
 ### 5.2 多空收益（因子加权）
 - `w_i^+ = max(x_i,0)/sum_j max(x_j,0)`
@@ -64,9 +64,9 @@
 - 约束: `sum(w^+)=1`, `sum(w^-)=1`（2x gross）
 
 ### 5.3 年化
-- `LS_rtn_annual = mean(LS_t) * (ANNUAL_DAYS / n)`
+- `LS_rtn_annual = mean(LS_t) * (annualization_days / n)`
 - `Sharpe_raw = mean(LS_t)/std(LS_t)`
-- `Sharpe_annual = Sharpe_raw * sqrt(ANNUAL_DAYS / n)`
+- `Sharpe_annual = Sharpe_raw * sqrt(annualization_days / n)`
 
 ## 6. 数据质量检查清单
 
@@ -85,17 +85,24 @@
   - `dates`
   - 因子对象（含 `performance_history`）
 - 先实现“真实数据版数据构建器”，输出同结构对象，最小改动接入引擎。
+- 当前已支持“模拟数据按真实格式写盘”用于联调：
+  - `python3 src/tests/test_performance.py --baseline-only --export-sim-data --export-root data/simulated`
+  - 输出：`base/`、`factors/`、`pools/`、`labels/`、`meta/`。
 
 2. 双跑校验
 - 同时跑模拟版与真实版，验证输出字段一致性（CSV/JSON/SVG 是否完整）。
 
 3. 小样本灰度
 - 先在短时间区间、较小股票池运行，确认性能与时序正确后再全量。
+- 可用滚动出库入口做日期批量回测：
+  - `src/tests/experiment_real_data_asof_rolling.py`
+  - 参数 `lookback_days` 若大于可得长度，系统会自动退化为“使用全部可得历史样本”。
 
 ## 8. 参数建议（实盘首版）
 
 - `horizon_days`: 5/10/20（建议先10）
-- `annual_days`: 250
+- `split_gap_days`: 建议 `>= horizon_days`（train/val/test 边界隔离）
+- `annualization_days`: 250
 - `eval_mode`: `strict_holdout`
 - `train/val/test`: 0.7/0.2/0.1（或按日期硬切分）
 - `target_size`: 先从 `num_factors` 的 20%-40% 扫描

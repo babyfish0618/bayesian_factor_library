@@ -26,8 +26,9 @@ class PerformanceTestConfig:
     TARGET_SIZE: int = 30
 
     ROLLING_WINDOW: int = 5
-    ANNUAL_DAYS: int = 250
     UPDATE_FREQUENCY: int = 21
+    SPLIT_GAP_DAYS: Optional[int] = None
+    SHOW_PROGRESS: bool = False
 
     GOOD_FACTOR_RATIO: float = 0.2
     MEDIUM_FACTOR_RATIO: float = 0.3
@@ -49,6 +50,7 @@ class PerformanceTestConfig:
 
     OOS_HORIZON: int = 21
     EVAL_MODE: str = "strict_holdout"  # strict_holdout | walk_forward_test
+    ENABLE_ASOF_FILTER: bool = False
     TRAIN_RATIO: float = 0.7
     VALIDATION_RATIO: float = 0.2
     TEST_RATIO: float = 0.1
@@ -75,6 +77,13 @@ class PerformanceTestConfig:
         "medium": 0.05,
         "bad": 0.08,
     })
+    EXPORT_SIM_DATA_AS_REAL_FORMAT: bool = False
+    EXPORT_SIM_OUTPUT_ROOT: str = "data/simulated"
+    EXPORT_SIM_POOL_NAME: str = "all_stocks"
+    EXPORT_SIM_INCLUDE_FORWARD_LABELS: bool = True
+    START_DATE: str = "2014-01-01"
+    END_DATE: Optional[str] = None
+    ASOF_FILTER_REF_DATE: Optional[str] = None
 
 
 def build_scenario(

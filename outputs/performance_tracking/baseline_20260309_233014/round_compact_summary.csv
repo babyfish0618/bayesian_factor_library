@@ -1,2 +1,0 @@
-round,date,asof_date,stability_pass,is_selected_round,is_last_round,oos_icir,oos_sharpe,oos_ls_rtn,turnover,oos_excess_vs_prevlib,d_oos_sharpe,d_oos_icir,test_oos_icir,test_oos_sharpe,test_oos_ls_rtn,test_oos_icir_pct,test_oos_sharpe_pct,test_oos_ls_rtn_pct
-1,2014-04-02,,False,True,True,10.45629744062203,10.444893659460462,0.032979606829396844,1.0,0.0,,,9.489106735570065,9.374592755416042,0.029261843604469533,1.0,1.0,1.0

@@ -1020,3 +1020,29 @@
     - `marginal_contribution.simulation_method`
     - `marginal_contribution.portfolio_methods`
     - `normalization.*` 区块
+
+## 2026-03-13 22:22
+
+### 时间
+2026-03-13 22:22
+
+### 本次任务
+按用户要求补充协作规则：明确 `archive` 历史目录默认可跳过，并完成项目主链路阅读与理解摘要准备。
+
+### 修改文件
+- AGENTS.md
+- AI_LOG.md
+
+### 主要改动
+- 在 `AGENTS.md` 的“修改代码前步骤”中新增补充规则：
+- 明确 `archive/`、`__archive/`、`docs/_archive/` 默认可跳过，不作为当前主链路依据。
+- 明确仅在用户要求排查历史实现时才进入历史目录读取/修改。
+- 在 `AI_LOG.md` 追加本次变更记录。
+
+### 测试情况
+是否新增测试：否
+是否运行测试：否
+测试结果：未运行
+
+### 风险与待办
+- 当前仓库中 `src/workflows/real_data_iteration_engine.py` 依赖 `data.real_data_loader`，但未发现对应实现文件；若运行真实数据入口可能报模块缺失错误，建议后续补齐或修正文档/导入路径。

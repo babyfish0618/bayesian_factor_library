@@ -23,7 +23,7 @@ class EvaluationConfig:
             'selected_short': 10, 'selected_long': 20,
             'unselected_long': 40
         },
-        'ic_calculation': {'min_periods': 10}
+        'ic_calculation': {'min_periods_abs': 5, 'min_periods_ratio': 0.5}
     })
     
     # 指标权重
@@ -84,6 +84,37 @@ class EvaluationConfig:
         'log_level': 'INFO', 'save_intermediate': True,
         'plot_figures': False, 'performance_tracking': True
     })
+
+    # 因子库出库标准（strict_holdout）
+    library_selection: Dict[str, Any] = field(default_factory=lambda: {
+        'anchor': {
+            'enabled': True,
+            'method': 'round_1',
+            'fixed_formula': {'type': 'aggregate_topk'},
+            'custom_ids_file': '',
+        },
+        'objective': {
+            'primary_metric': 'oos_sharpe',
+            'secondary_metric': 'oos_icir',
+        },
+        'thresholds': {
+            'min_improve_vs_prev': 0.0,
+            'min_improve_vs_anchor': 0.0,
+            'min_improve_vs_anchor_secondary': 0.0,
+        },
+        'stability_gate': {
+            'enabled': True,
+            'mode': 'k_of_n',
+            'k_of_n': {'k': 3, 'n': 4},
+            'turnover_max': 0.85,
+            'delta_sharpe_raw_max': 0.10,
+            'delta_icir_raw_max': 0.10,
+            'excess_vs_prev_min': -0.02,
+        },
+        'fallback': {
+            'when_no_candidate': 'best_validation',
+        },
+    })
     
     # 元数据
     version: str = "1.0.0"
@@ -97,6 +128,15 @@ class EvaluationConfig:
             for key, value in self.time_windows['selection'].items():
                 if not isinstance(value, int) or value <= 0:
                     raise ValueError(f"时间窗口 {key} 必须为正整数")
+
+            # 验证 IC/ICIR 样本门槛参数
+            ic_cfg = self.time_windows.get('ic_calculation', {})
+            min_abs = int(ic_cfg.get('min_periods_abs', 5))
+            min_ratio = float(ic_cfg.get('min_periods_ratio', 0.5))
+            if min_abs <= 0:
+                raise ValueError("time_windows.ic_calculation.min_periods_abs 必须为正整数")
+            if not (0.0 <= min_ratio <= 1.0):
+                raise ValueError("time_windows.ic_calculation.min_periods_ratio 必须在[0,1]区间")
             
             # 验证权重和为1
             for category, weights in self.indicator_weights.items():
@@ -244,6 +284,7 @@ class ConfigManager:
                 'correlation': self.config.correlation,
                 'marginal_contribution': self.config.marginal_contribution,
                 'debug': self.config.debug,
+                'library_selection': self.config.library_selection,
                 'version': self.config.version,
                 'description': self.config.description,
                 'last_updated': self.config.last_updated

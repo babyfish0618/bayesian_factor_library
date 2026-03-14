@@ -37,11 +37,19 @@ class FactorLibraryTracker:
 
     @staticmethod
     def _safe_mean(values: List[float]) -> float:
-        return float(np.mean(values)) if values else 0.0
+        if not values:
+            return 0.0
+        arr = np.array(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return float(np.mean(arr)) if arr.size > 0 else 0.0
 
     @staticmethod
     def _safe_std(values: List[float]) -> float:
-        return float(np.std(values)) if values else 0.0
+        if not values:
+            return 0.0
+        arr = np.array(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return float(np.std(arr)) if arr.size > 0 else 0.0
 
     def record_round(
         self,

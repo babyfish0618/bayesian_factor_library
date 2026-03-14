@@ -278,7 +278,16 @@ class PortfolioSimulator:
             return self._calculate_equal_weights(factor_ids)
         
         # 提取ICIR值
-        icir_values = [max(factor_icirs.get(fid, 0), 0) for fid in factor_ids]
+        icir_values = []
+        for fid in factor_ids:
+            val = factor_icirs.get(fid, 0)
+            try:
+                val = float(val)
+            except Exception:
+                val = 0.0
+            if not np.isfinite(val):
+                val = 0.0
+            icir_values.append(max(val, 0.0))
         
         # 避免除零
         total_icir = sum(icir_values)

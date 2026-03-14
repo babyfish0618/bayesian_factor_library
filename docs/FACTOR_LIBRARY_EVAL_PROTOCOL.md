@@ -131,6 +131,11 @@
 在信号日 `t`：
 - 横截面IC: `IC_t = corr_i(x_{i,t}, R_{i,t+1->t+n})`
 - `IC_mean`, `ICIR = mean(IC_t) / std(IC_t)` 在样本期内汇总。
+- 样本充足性门槛（配置项）：
+- `time_windows.ic_calculation.min_periods_abs`
+- `time_windows.ic_calculation.min_periods_ratio`
+- 动态门槛：`required_points = max(min_periods_abs, ceil(window * min_periods_ratio))`
+- 当有效 IC 样本 `< required_points` 时，`ICIR` 记为不可计算（`NaN`），不使用 `0` 代替。
 
 ### 6.2 多空收益
 
@@ -169,6 +174,22 @@
 若未触发:
 1. 默认: 取最后一轮候选库
 2. 稳健: 在满足稳定性下选 C 指标最优 `S_r`
+
+当前实现对应配置键（`strict_holdout`）：
+- 主/次目标: `library_selection.objective.primary_metric` / `library_selection.objective.secondary_metric`
+- 双基准阈值:
+- `library_selection.thresholds.min_improve_vs_prev`
+- `library_selection.thresholds.min_improve_vs_anchor`
+- `library_selection.thresholds.min_improve_vs_anchor_secondary`
+- 稳定门控:
+- `library_selection.stability_gate.mode` (`all` / `k_of_n`)
+- `library_selection.stability_gate.k_of_n.k`
+- `library_selection.stability_gate.k_of_n.n`
+- `library_selection.stability_gate.turnover_max`
+- `library_selection.stability_gate.delta_sharpe_raw_max`
+- `library_selection.stability_gate.delta_icir_raw_max`
+- `library_selection.stability_gate.excess_vs_prev_min`
+- 无候选回退: `library_selection.fallback.when_no_candidate`
 
 ## 8. 输出字段规范（协议级）
 

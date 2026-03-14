@@ -1,6 +1,10 @@
 """
-新版贝叶斯选择器 (V2)
-集成多时间窗口、多指标、真实相关性计算和边际贡献评估
+新版贝叶斯选择器 (V2)。
+
+职责:
+1. 基于多窗口统计 + Thompson Sampling 进行因子选择。
+2. 基于新增观测更新已选因子的后验参数。
+3. 对未选因子执行边际贡献评估，并按结果更新后验。
 """
 
 import numpy as np
@@ -70,7 +74,9 @@ class BayesianSelectorV2:
         
         self.config: EvaluationConfig = self.config_manager.config
         self.annualization_days = float(getattr(self.config, "annualization_days", 250))
-        self.ic_min_periods = int(self.config.time_windows.get("ic_calculation", {}).get("min_periods", 10))
+        ic_cfg = self.config.time_windows.get("ic_calculation", {})
+        self.ic_min_periods_abs = int(ic_cfg.get("min_periods_abs", 5))
+        self.ic_min_periods_ratio = float(ic_cfg.get("min_periods_ratio", 0.5))
         
         # 初始化子模块
         self.correlation_calculator = CorrelationCalculator(
@@ -102,7 +108,8 @@ class BayesianSelectorV2:
         """添加因子"""
         factor.config = factor.config or {}
         factor.config["annualization_days"] = self.annualization_days
-        factor.config["ic_min_periods"] = self.ic_min_periods
+        factor.config["ic_min_periods_abs"] = self.ic_min_periods_abs
+        factor.config["ic_min_periods_ratio"] = self.ic_min_periods_ratio
         self.factors[factor.id] = factor
     
     def add_factors(self, factors: List[EnhancedFactor]):
@@ -281,8 +288,15 @@ class BayesianSelectorV2:
         
         return update_result
     
-    def _calculate_factor_scores(self, current_date: str) -> Dict[str, float]:
-        """计算因子综合得分"""
+    def _calculate_factor_scores(self, current_date: str) -> Dict[str, Dict[str, float]]:
+        """计算每个候选因子的最终得分与中间拆解项。
+
+        返回字段:
+        - final_score: 选择排序使用的最终分数
+        - aggregate_score: 多窗口多指标聚合分
+        - bayesian_score: Beta(alpha, beta) 的一次采样值
+        - success_rate: 历史后验成功率估计
+        """
         scores = {}
         blend_cfg = self.config.bayesian.get('selection_blend', {})
         aggregate_w = float(blend_cfg.get('aggregate_score', 0.7))
@@ -331,15 +345,23 @@ class BayesianSelectorV2:
         return selected
     
     def _evaluate_selected_success(self, factor: EnhancedFactor, performance: Dict, current_date: str) -> bool:
-        """评估选中因子是否成功"""
+        """评估“被选中因子”在本轮是否判定为成功。
+
+        业务规则:
+        - 主要依据因子历史表现窗口重新计算 ICIR / Sharpe / WinRate。
+        - `performance` 字典当前仅补充 `rank_percentile` 输入。
+        - 当有效样本数不足 `required_points=max(min_periods_abs, ceil(window*min_periods_ratio))`
+          时直接视为失败，避免小样本误判。
+        """
         thresholds = self.config.success_thresholds['selected']
         
         # 获取近期表现
         lookback = self.config.time_windows['evaluation'].get('selected_short', 10)
         recent_perf = factor.get_recent_performance(lookback, current_date)
         
-        min_points = int(self.config.time_windows.get('ic_calculation', {}).get('min_periods', 10))
-        if len(recent_perf) < min_points:
+        required_points = factor.get_required_ic_periods(lookback)
+        valid_ic_points = sum(1 for p in recent_perf if p.ic is not None)
+        if valid_ic_points < required_points:
             return False
         
         # 计算指标

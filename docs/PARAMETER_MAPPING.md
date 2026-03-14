@@ -23,7 +23,8 @@
 | `time_windows.evaluation.selected_short` | `10` | `src/core/bayesian_selector_v2.py#_evaluate_selected_success` | 选中因子 success 判定回看窗口 |
 | `time_windows.evaluation.selected_long` | `20` | `src/workflows/factor_library_iteration_engine.py` / `src/core/bayesian_selector_v2.py` | 选中因子统计展示与更新评估长窗 |
 | `time_windows.evaluation.unselected_long` | `40` | `src/core/bayesian_selector_v2.py#update_from_performance` | 未选中因子边际贡献评估回看窗口 |
-| `time_windows.ic_calculation.min_periods` | `10` | `src/core/factor_enhanced.py#calculate_icir` / `src/core/bayesian_selector_v2.py` | IC/ICIR最小样本门槛；不足则不判定或返回0 |
+| `time_windows.ic_calculation.min_periods_abs` | `5` | `src/core/factor_enhanced.py#get_required_ic_periods` / `src/core/bayesian_selector_v2.py` | IC/ICIR最小样本绝对门槛 |
+| `time_windows.ic_calculation.min_periods_ratio` | `0.5` | 同上 | IC/ICIR最小样本比例门槛（相对窗口长度） |
 
 ## 3) 选择打分（A类）
 
@@ -35,6 +36,9 @@
 | `indicator_weights.selection.stability` | `0.1` | 同上 | 选择打分中稳定性（Sharpe归一化）权重 |
 | `bayesian.selection_blend.aggregate_score` | `0.7` | `src/core/bayesian_selector_v2.py#_calculate_factor_scores` | `final_score` 中聚合分权重 |
 | `bayesian.selection_blend.bayesian_score` | `0.3` | 同上 | `final_score` 中 Thompson 采样权重 |
+
+说明（无独立参数）:
+- `src/core/factor_enhanced.py#get_aggregate_score` 对缺失指标/缺失窗口执行权重重归一化，避免 `NaN` 传播到 `aggregate_score/final_score`。
 
 ## 4) 选中因子成功判定（B类-selected）
 
@@ -90,3 +94,24 @@
 | `EVAL_MODE` | `strict_holdout` | 同上 | 验证模式 |
 | `ENABLE_ASOF_FILTER` | `False` | 同上 | 按 as-of 过滤可得标签 |
 | `EARLY_STOP_*` | 见实验配置 | 同上 | 早停阈值与窗口 |
+
+## 9) strict_holdout 双基准出库参数（YAML）
+
+| 参数 | 默认值 | 代码位置 | 作用 |
+|---|---:|---|---|
+| `library_selection.anchor.enabled` | `true` | `src/workflows/factor_library_iteration_engine.py` | 是否启用锚库对照 |
+| `library_selection.anchor.method` | `round_1` | 同上 | 锚库定义方式（当前已实现 `round_1`） |
+| `library_selection.objective.primary_metric` | `oos_sharpe` | 同上 | 主指标（用于阈值与排序） |
+| `library_selection.objective.secondary_metric` | `oos_icir` | 同上 | 次指标（用于锚库阈值） |
+| `library_selection.thresholds.min_improve_vs_prev` | `0.0` | 同上 | 主指标相对前轮最小改善 |
+| `library_selection.thresholds.min_improve_vs_anchor` | `0.0` | 同上 | 主指标相对锚库最小改善 |
+| `library_selection.thresholds.min_improve_vs_anchor_secondary` | `0.0` | 同上 | 次指标相对锚库最小改善 |
+| `library_selection.stability_gate.enabled` | `true` | 同上 | 是否启用稳定性门控 |
+| `library_selection.stability_gate.mode` | `k_of_n` | 同上 | 门控方式（`all` / `k_of_n`） |
+| `library_selection.stability_gate.k_of_n.k` | `3` | 同上 | `k_of_n` 至少满足条件数 |
+| `library_selection.stability_gate.k_of_n.n` | `4` | 同上 | `k_of_n` 条件总数 |
+| `library_selection.stability_gate.turnover_max` | `0.85` | 同上 | 换手率上限 |
+| `library_selection.stability_gate.delta_sharpe_raw_max` | `0.10` | 同上 | 相邻轮 Sharpe(raw) 变化上限 |
+| `library_selection.stability_gate.delta_icir_raw_max` | `0.10` | 同上 | 相邻轮 ICIR(raw) 变化上限 |
+| `library_selection.stability_gate.excess_vs_prev_min` | `-0.02` | 同上 | 相对前轮超额最小值 |
+| `library_selection.fallback.when_no_candidate` | `best_validation` | 同上 | 无候选轮次时回退策略 |

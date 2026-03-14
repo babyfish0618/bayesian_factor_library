@@ -216,15 +216,16 @@ python src/tests/experiment_stability_early_stop.py
 
 ---
 
-## 7) 数学校验脚本
+## 7) 历史数学校验脚本（已归档）
 
 目的:
 - 验证底层数学逻辑（IC控制、相关性构造、权重归一化），不走完整迭代引擎。
+- 当前不属于主实验入口，已移动到归档目录。
 
 示例:
 ```bash
-python src/tests/experiment_math_smoke_ic_control.py
-python src/tests/experiment_math_validation_correlation.py
+python src/tests/_archive/experiment_math_smoke_ic_control.py
+python src/tests/_archive/experiment_math_validation_correlation.py
 ```
 
 ---

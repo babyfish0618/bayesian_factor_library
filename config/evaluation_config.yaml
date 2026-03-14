@@ -20,7 +20,8 @@ time_windows:
   
   # IC计算相关
   ic_calculation:
-    min_periods: 10        # IC/ICIR最小样本数（不足则返回0）
+    min_periods_abs: 5      # IC/ICIR最小样本绝对门槛
+    min_periods_ratio: 0.5  # IC/ICIR最小样本比例门槛(相对窗口长度)
 
 # ==================== 指标权重配置 ====================
 indicator_weights:
@@ -98,6 +99,38 @@ debug:
   save_intermediate: true   # 保存中间结果
   plot_figures: false       # 生成图表
   performance_tracking: true # 跟踪性能指标
+
+# ==================== 因子库出库标准（strict_holdout） ====================
+library_selection:
+  anchor:
+    enabled: true
+    method: "round_1"                # round_1 | fixed_formula | custom_ids
+    fixed_formula:
+      type: "aggregate_topk"         # 预留：固定公式锚库
+    custom_ids_file: ""              # 预留：自定义锚库ID列表文件
+
+  objective:
+    primary_metric: "oos_sharpe"     # oos_sharpe | oos_icir | oos_ls_mean
+    secondary_metric: "oos_icir"
+
+  thresholds:
+    min_improve_vs_prev: 0.0                 # 主指标相对前一轮最小改善
+    min_improve_vs_anchor: 0.0               # 主指标相对锚库最小改善
+    min_improve_vs_anchor_secondary: 0.0     # 次指标相对锚库最小改善
+
+  stability_gate:
+    enabled: true
+    mode: "k_of_n"                    # all | k_of_n
+    k_of_n:
+      k: 3
+      n: 4
+    turnover_max: 0.85
+    delta_sharpe_raw_max: 0.10
+    delta_icir_raw_max: 0.10
+    excess_vs_prev_min: -0.02
+
+  fallback:
+    when_no_candidate: "best_validation"   # best_validation | last_round
 
 # ==================== 版本控制 ====================
 version: "1.0.0"

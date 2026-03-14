@@ -248,9 +248,15 @@ class LatentFactorDataSimulator:
         return ls_returns
 
     def build_market_data(self) -> Tuple[List[str], np.ndarray, np.ndarray]:
-        """生成交易日历、股票收益和前瞻收益标签。"""
+        """生成交易日历、股票收益和前瞻收益标签。
+
+        关键约束:
+        - 当使用 `start_date + end_date` 生成日期轴时，收益率天数必须与日期轴长度一致。
+        - 否则会出现 `daily_returns` 与 `pool/factors` 日期跨度不一致，进而影响后续评估。
+        """
         dates = self.generate_dates()
-        stock_returns = self.generate_stock_returns()
+        # 使用日期轴实际长度驱动收益矩阵长度，避免配置 `num_days` 与日期区间冲突。
+        stock_returns = self.generate_stock_returns(n_days=len(dates))
         forward_returns = self.calculate_forward_returns_ex_t(stock_returns, self.config.rolling_window)
         self._latest_dates = dates
         self._latest_stock_returns = stock_returns

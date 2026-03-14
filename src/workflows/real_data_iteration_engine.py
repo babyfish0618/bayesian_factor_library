@@ -17,7 +17,12 @@ from workflows.factor_library_iteration_engine import FactorLibraryIterationEngi
 
 
 class RealDataIterationEngine(FactorLibraryIterationEngine):
-    """基于本地真实格式CSV文件运行单场景因子库迭代。"""
+    """基于本地真实格式 CSV 文件运行单场景因子库迭代。
+
+    设计约束:
+    - 仅覆写数据准备相关步骤，其余选择/更新/评估逻辑与模拟引擎一致。
+    - 真实数据模式下依然沿用同一套评估协议与输出结构，便于横向对比。
+    """
 
     @staticmethod
     def _resolve_asof_index(dates, asof_date: str) -> int:
@@ -33,6 +38,7 @@ class RealDataIterationEngine(FactorLibraryIterationEngine):
         return idx
 
     def _slice_panel_for_asof(self, panel: Dict[str, object]) -> Dict[str, object]:
+        """按 asof 与回看窗口截取面板，保证样本不使用未来信息。"""
         asof_date = getattr(self.config, "REAL_DATA_ASOF_DATE", None)
         lookback_days = getattr(self.config, "REAL_DATA_LOOKBACK_DAYS", None)
         if asof_date is None and lookback_days is None:
@@ -76,6 +82,7 @@ class RealDataIterationEngine(FactorLibraryIterationEngine):
         }
 
     def _prepare_data(self) -> Tuple[Dict[str, object], Dict[str, str], float]:
+        """读取真实数据、构造前瞻标签并生成 EnhancedFactor 列表。"""
         start_time = time.time()
 
         daily_returns_file = getattr(self.config, "REAL_DATA_DAILY_RETURNS_FILE", "")
@@ -144,6 +151,12 @@ class RealDataIterationEngine(FactorLibraryIterationEngine):
         return "real"
 
     def _build_factors_from_real_panel(self, factor_scores: Dict[str, np.ndarray]):
+        """将真实暴露面板转为因子对象历史表现。
+
+        关键时序:
+        - 用信号日 t 的因子值与 `R(t+1->t+h)` 计算 IC/LS。
+        - 表现记录日期写入 `t+h`（标签实现日），与模拟链路保持一致。
+        """
         factors = []
         n_periods = self.forward_returns.shape[1]
         pool_for_signal = self._in_pool[:, :n_periods]

@@ -195,6 +195,12 @@ class FactorLibraryIterationEngine:
         update_points = list(range(min_start_day, iter_end_idx + 1, self.config.UPDATE_FREQUENCY))
         if self.config.NUM_TEST_ROUNDS is not None:
             update_points = update_points[: self.config.NUM_TEST_ROUNDS]
+        if eval_mode == "strict_holdout":
+            self._assert_strict_holdout_no_leakage(
+                split_info=split_info,
+                update_points=update_points,
+                iter_end_idx=iter_end_idx,
+            )
 
         print(f"   将进行 {len(update_points)} 轮选择测试")
         print(f"   最早起始轮次索引(min_start_day): {min_start_day}")
@@ -211,6 +217,12 @@ class FactorLibraryIterationEngine:
         asof_filter_ref = getattr(self.config, "ASOF_FILTER_REF_DATE", None)
         if use_asof_filter and asof_filter_ref is None:
             asof_filter_ref = self.dates[-1]
+        library_selection_cfg = self._get_library_selection_cfg()
+        anchor_cfg = library_selection_cfg.get("anchor", {})
+        anchor_enabled = bool(anchor_cfg.get("enabled", True))
+        anchor_method = str(anchor_cfg.get("method", "round_1"))
+        anchor_library_ids = None
+        anchor_eval_cached = None
 
         for i, update_day in enumerate(update_points):
             print(f"   第{i+1}轮选择 (日期: {self.dates[update_day]})...")
@@ -310,6 +322,29 @@ class FactorLibraryIterationEngine:
             else:
                 oos_excess_vs_prevlib = 0.0
 
+            if anchor_enabled and anchor_method == "round_1" and anchor_library_ids is None:
+                anchor_library_ids = list(selection_result.selected_factors)
+
+            oos_anchor = None
+            if anchor_enabled and anchor_library_ids:
+                if eval_mode == "strict_holdout":
+                    if anchor_eval_cached is None:
+                        anchor_eval_cached = self._evaluate_oos_library_on_date_range(
+                            anchor_library_ids,
+                            start_date=split_info["val_start_date"],
+                            end_date=split_info["val_end_date"],
+                            asof_date=asof_date,
+                        )
+                    oos_anchor = anchor_eval_cached
+                else:
+                    oos_anchor = self._evaluate_oos_library_forward(
+                        anchor_library_ids,
+                        start_day=update_day + 1,
+                        horizon=self.config.OOS_HORIZON,
+                        end_cap_day=iter_end_idx,
+                        asof_date=asof_date,
+                    )
+
             overlap_prev = (
                 self._jaccard_overlap(selection_result.selected_factors, prev_selected_ids or [])
                 if prev_selected_ids is not None
@@ -332,6 +367,12 @@ class FactorLibraryIterationEngine:
                 "oos_icir_raw": oos_current.get("icir_raw"),
                 "oos_sharpe_raw": oos_current.get("sharpe_raw"),
                 "oos_ls_mean_raw": oos_current.get("ls_mean_raw"),
+                "oos_excess_vs_anchor": (
+                    (oos_current["ls_mean"] - oos_anchor["ls_mean"]) if oos_anchor is not None else None
+                ),
+                "anchor_metric_oos_sharpe": (oos_anchor.get("sharpe") if oos_anchor is not None else None),
+                "anchor_metric_oos_icir": (oos_anchor.get("icir") if oos_anchor is not None else None),
+                "anchor_metric_oos_ls_mean": (oos_anchor.get("ls_mean") if oos_anchor is not None else None),
                 "test_oos_icir": None,
                 "test_oos_sharpe": None,
                 "test_oos_ls_mean": None,
@@ -352,22 +393,50 @@ class FactorLibraryIterationEngine:
                 round_metric["test_oos_icir_raw"] = test_eval_current.get("icir_raw")
                 round_metric["test_oos_sharpe_raw"] = test_eval_current.get("sharpe_raw")
                 round_metric["test_oos_ls_mean_raw"] = test_eval_current.get("ls_mean_raw")
-            if len(round_iteration_metrics) == 0:
+            prev_metric = round_iteration_metrics[-1] if round_iteration_metrics else None
+            if prev_metric is None:
                 round_metric["d_oos_sharpe"] = None
                 round_metric["d_oos_icir"] = None
-                round_metric["stability_pass"] = False
             else:
-                prev_metric = round_iteration_metrics[-1]
-                d_sharpe = abs(round_metric["oos_sharpe_raw"] - prev_metric["oos_sharpe_raw"])
-                d_icir = abs(round_metric["oos_icir_raw"] - prev_metric["oos_icir_raw"])
-                round_metric["d_oos_sharpe"] = d_sharpe
-                round_metric["d_oos_icir"] = d_icir
-                round_metric["stability_pass"] = (
-                    round_metric["turnover"] <= self.config.EARLY_STOP_EPS_TURNOVER
-                    and d_sharpe <= self.config.EARLY_STOP_EPS_PERF
-                    and d_icir <= self.config.EARLY_STOP_EPS_PERF
-                    and round_metric["oos_excess_vs_prevlib"] >= -self.config.EARLY_STOP_DELTA
+                round_metric["d_oos_sharpe"] = abs(
+                    float(round_metric["oos_sharpe_raw"]) - float(prev_metric["oos_sharpe_raw"])
                 )
+                round_metric["d_oos_icir"] = abs(
+                    float(round_metric["oos_icir_raw"]) - float(prev_metric["oos_icir_raw"])
+                )
+
+            primary_metric_name = str(
+                library_selection_cfg.get("objective", {}).get("primary_metric", "oos_sharpe")
+            )
+            secondary_metric_name = str(
+                library_selection_cfg.get("objective", {}).get("secondary_metric", "oos_icir")
+            )
+            primary_value = float(round_metric.get(self._metric_to_round_key(primary_metric_name), 0.0))
+            secondary_value = float(round_metric.get(self._metric_to_round_key(secondary_metric_name), 0.0))
+            if prev_metric is None:
+                prev_primary_value = primary_value
+            else:
+                prev_primary_value = float(prev_metric.get(self._metric_to_round_key(primary_metric_name), 0.0))
+
+            if oos_anchor is None:
+                anchor_primary_value = primary_value
+                anchor_secondary_value = secondary_value
+            else:
+                anchor_primary_value = self._metric_value_from_eval(oos_anchor, primary_metric_name)
+                anchor_secondary_value = self._metric_value_from_eval(oos_anchor, secondary_metric_name)
+
+            round_metric["improve_primary_vs_prev"] = primary_value - prev_primary_value
+            round_metric["improve_primary_vs_anchor"] = primary_value - anchor_primary_value
+            round_metric["improve_secondary_vs_anchor"] = secondary_value - anchor_secondary_value
+            round_metric["stability_pass"] = self._evaluate_stability_gate(
+                round_metric=round_metric,
+                gate_cfg=library_selection_cfg.get("stability_gate", {}),
+                prev_metric=prev_metric,
+            )
+            round_metric["selection_candidate"] = self._is_selection_candidate(
+                round_metric=round_metric,
+                selection_cfg=library_selection_cfg,
+            )
             round_iteration_metrics.append(round_metric)
 
             print(f"     选中: {len(selection_result.selected_factors)} 个因子")
@@ -475,9 +544,6 @@ class FactorLibraryIterationEngine:
         )
         results["dynamics_plot_svg"] = dynamics_svg.get("validation")
         results["test_dynamics_plot_svg"] = dynamics_svg.get("test")
-        results["final_library_file"] = self._save_final_library_artifact(
-            tracking_files.get("output_dir"), results
-        )
         results["scenario_name"] = self.config.SCENARIO_NAME
         results["scenario_params"] = {
             "random_seed": self.config.RANDOM_SEED,
@@ -529,8 +595,131 @@ class FactorLibraryIterationEngine:
                     asof_date=self.dates[-1] if use_asof_filter else None,
                 )
 
+        # 在所有评估字段写入完成后再落盘，避免 final_library.json 缺少最终评估结果。
+        results["final_library_file"] = self._save_final_library_artifact(
+            tracking_files.get("output_dir"), results
+        )
+
         self._print_final_results(results)
         return results
+
+    def _assert_strict_holdout_no_leakage(
+        self,
+        split_info: Dict[str, object],
+        update_points: List[int],
+        iter_end_idx: int,
+    ) -> None:
+        """strict_holdout 模式下的防泄露边界检查。
+
+        核心约束:
+        - 更新轮次只能落在 train 区间内；
+        - validation/test 区间必须严格晚于 train（中间允许 gap）。
+        """
+        train_end = int(split_info["train_end_idx"])
+        val_start = int(split_info["val_start_idx"])
+        val_end = int(split_info["val_end_idx"])
+
+        if iter_end_idx != train_end:
+            raise ValueError(
+                f"strict_holdout 边界异常: iter_end_idx={iter_end_idx} 与 train_end_idx={train_end} 不一致"
+            )
+        if update_points and max(update_points) > train_end:
+            raise ValueError(
+                f"strict_holdout 泄露风险: update_points 最大值 {max(update_points)} 超过 train_end_idx {train_end}"
+            )
+        if val_start <= train_end:
+            raise ValueError(
+                f"strict_holdout 切分异常: val_start_idx={val_start} 必须大于 train_end_idx={train_end}"
+            )
+
+        test_start = split_info.get("test_start_idx")
+        if test_start is not None and int(test_start) <= val_end:
+            raise ValueError(
+                f"strict_holdout 切分异常: test_start_idx={test_start} 必须大于 val_end_idx={val_end}"
+            )
+
+        print(
+            "   防泄露检查(strict_holdout): "
+            f"update_end={self.dates[train_end]} | "
+            f"val={split_info['val_start_date']}~{split_info['val_end_date']} | "
+            f"test={split_info.get('test_start_date')}~{split_info.get('test_end_date')}"
+        )
+
+    def _get_library_selection_cfg(self) -> Dict[str, object]:
+        """获取 strict_holdout 的因子库出库配置。"""
+        cfg = getattr(self.selector.config, "library_selection", None)
+        return cfg if isinstance(cfg, dict) else {}
+
+    @staticmethod
+    def _metric_to_round_key(metric_name: str) -> str:
+        name = str(metric_name or "").strip().lower()
+        if name.startswith("oos_"):
+            return name
+        if name in {"sharpe", "icir", "ls_mean"}:
+            return f"oos_{name}"
+        if name in {"ls_return", "ls_rtn", "rtn"}:
+            return "oos_ls_mean"
+        return "oos_sharpe"
+
+    def _metric_value_from_eval(self, eval_dict: Dict[str, float], metric_name: str) -> float:
+        key = self._metric_to_round_key(metric_name)
+        eval_key = key.replace("oos_", "")
+        return float(eval_dict.get(eval_key, 0.0))
+
+    def _evaluate_stability_gate(
+        self,
+        round_metric: Dict[str, object],
+        gate_cfg: Dict[str, object],
+        prev_metric: Dict[str, object],
+    ) -> bool:
+        """按配置判定轮次是否通过稳定性门控。"""
+        if not bool(gate_cfg.get("enabled", True)):
+            return True
+        if prev_metric is None:
+            return False
+
+        turnover_max = float(gate_cfg.get("turnover_max", self.config.EARLY_STOP_EPS_TURNOVER))
+        delta_sharpe_max = float(gate_cfg.get("delta_sharpe_raw_max", self.config.EARLY_STOP_EPS_PERF))
+        delta_icir_max = float(gate_cfg.get("delta_icir_raw_max", self.config.EARLY_STOP_EPS_PERF))
+        excess_vs_prev_min = float(gate_cfg.get("excess_vs_prev_min", -self.config.EARLY_STOP_DELTA))
+
+        conditions = [
+            float(round_metric.get("turnover", 1.0)) <= turnover_max,
+            float(round_metric.get("d_oos_sharpe", 1e9)) <= delta_sharpe_max,
+            float(round_metric.get("d_oos_icir", 1e9)) <= delta_icir_max,
+            float(round_metric.get("oos_excess_vs_prevlib", -1e9)) >= excess_vs_prev_min,
+        ]
+
+        mode = str(gate_cfg.get("mode", "all")).lower()
+        if mode == "k_of_n":
+            kn_cfg = gate_cfg.get("k_of_n", {}) if isinstance(gate_cfg.get("k_of_n", {}), dict) else {}
+            k = int(kn_cfg.get("k", 3))
+            n = int(kn_cfg.get("n", len(conditions)))
+            n = max(1, min(n, len(conditions)))
+            return sum(1 for x in conditions[:n] if x) >= max(1, k)
+        return all(conditions)
+
+    def _is_selection_candidate(
+        self,
+        round_metric: Dict[str, object],
+        selection_cfg: Dict[str, object],
+    ) -> bool:
+        """判定该轮是否满足 strict_holdout 的双基准出库候选条件。"""
+        thresholds = selection_cfg.get("thresholds", {}) if isinstance(selection_cfg.get("thresholds", {}), dict) else {}
+        gate_cfg = selection_cfg.get("stability_gate", {}) if isinstance(selection_cfg.get("stability_gate", {}), dict) else {}
+        need_gate = bool(gate_cfg.get("enabled", True))
+
+        cond_prev = float(round_metric.get("improve_primary_vs_prev", 0.0)) >= float(
+            thresholds.get("min_improve_vs_prev", 0.0)
+        )
+        cond_anchor = float(round_metric.get("improve_primary_vs_anchor", 0.0)) >= float(
+            thresholds.get("min_improve_vs_anchor", 0.0)
+        )
+        cond_anchor_secondary = float(round_metric.get("improve_secondary_vs_anchor", 0.0)) >= float(
+            thresholds.get("min_improve_vs_anchor_secondary", 0.0)
+        )
+        cond_gate = bool(round_metric.get("stability_pass", False)) if need_gate else True
+        return cond_prev and cond_anchor and cond_anchor_secondary and cond_gate
 
     def _resolve_final_library_index(
         self,
@@ -540,6 +729,13 @@ class FactorLibraryIterationEngine:
         early_stop_triggered: bool,
         early_stop_round: int,
     ) -> Tuple[int, str]:
+        """确定最终出库轮次及其原因标签。
+
+        规则:
+        - walk_forward_test: 早停触发则取触发轮，否则取最后一轮。
+        - strict_holdout: 优先在 `stability_pass=True` 的轮次中选验证最优；
+          若无稳定轮次，再在全体轮次中选验证最优（回退）。
+        """
         if not all_selection_results:
             return -1, "empty"
 
@@ -548,23 +744,29 @@ class FactorLibraryIterationEngine:
                 return early_stop_round - 1, "walk_forward_early_stop"
             return len(all_selection_results) - 1, "walk_forward_last_round"
 
-        # strict_holdout: 在稳定性通过轮次里选择验证集最优轮次
-        stable_candidates = [
-            m for m in round_metrics if bool(m.get("stability_pass", False))
+        # strict_holdout: 先在 selection_candidate=True 的轮次中选验证最优
+        strict_candidates = [
+            m for m in round_metrics if bool(m.get("selection_candidate", False))
         ]
-        if stable_candidates:
+        if strict_candidates:
             best = max(
-                stable_candidates,
+                strict_candidates,
                 key=lambda x: (float(x.get("oos_sharpe", 0.0)), float(x.get("oos_icir", 0.0))),
             )
-            return int(best["round"]) - 1, "strict_holdout_best_stable_validation"
+            return int(best["round"]) - 1, "strict_holdout_best_candidate_validation"
 
-        # 回退：若无稳定性通过轮次，则取验证集最优轮次
+        fallback_mode = str(
+            self._get_library_selection_cfg().get("fallback", {}).get("when_no_candidate", "best_validation")
+        )
+        if fallback_mode == "last_round":
+            return len(all_selection_results) - 1, "strict_holdout_fallback_last_round"
+
+        # 回退：若无候选轮次，则取验证集最优轮次
         best_any = max(
             round_metrics,
             key=lambda x: (float(x.get("oos_sharpe", 0.0)), float(x.get("oos_icir", 0.0))),
         )
-        return int(best_any["round"]) - 1, "strict_holdout_best_validation_fallback"
+        return int(best_any["round"]) - 1, "strict_holdout_fallback_best_validation"
 
     @staticmethod
     def _count_factor_groups(factor_ids: List[str]) -> Dict[str, int]:
@@ -581,6 +783,12 @@ class FactorLibraryIterationEngine:
     def _evaluate_oos_library_on_date_range(
         self, selected_ids: List[str], start_date: str, end_date: str, asof_date: str = None
     ) -> Dict[str, float]:
+        """在固定日期区间评估候选库 OOS 表现。
+
+        注意:
+        - 支持 `asof_date` 过滤，只使用在该时点已“可得”的标签样本。
+        - 返回同时包含 raw 指标与年化指标，稳定性判定优先使用 raw 口径。
+        """
         if not selected_ids:
             return {
                 "ic_mean": 0.0, "icir": 0.0, "ls_mean": 0.0, "sharpe": 0.0, "win_rate": 0.0,
@@ -636,6 +844,7 @@ class FactorLibraryIterationEngine:
     def _evaluate_oos_library_forward(
         self, selected_ids: List[str], start_day: int, horizon: int, end_cap_day: int, asof_date: str = None
     ) -> Dict[str, float]:
+        """在滚动前瞻窗口上评估 OOS（walk-forward 使用）。"""
         if start_day >= len(self.dates) or not selected_ids:
             return {"ic_mean": 0.0, "icir": 0.0, "ls_mean": 0.0, "sharpe": 0.0, "win_rate": 0.0}
         end_day = min(len(self.dates) - 1, start_day + horizon - 1, end_cap_day)
@@ -649,6 +858,13 @@ class FactorLibraryIterationEngine:
         )
 
     def _build_dataset_split(self, total_days: int) -> Dict[str, object]:
+        """按 train/validation/test 比例构建时间切分并加入 split gap。
+
+        边界规则:
+        - 先扣除 train-val、val-test 间隔天数（gap），再按比例切分有效样本。
+        - `test_ratio <= 0` 时自动并入 validation。
+        - 若切分后 train/validation 不足 1 天，直接报错。
+        """
         train_ratio = float(getattr(self.config, "TRAIN_RATIO", 0.7))
         val_ratio = float(getattr(self.config, "VALIDATION_RATIO", 0.2))
         test_ratio = float(getattr(self.config, "TEST_RATIO", 0.1))
@@ -732,6 +948,7 @@ class FactorLibraryIterationEngine:
         return len(s1 & s2) / len(union)
 
     def _check_early_stop(self, metrics: List[Dict]) -> bool:
+        """判断是否满足连续窗口早停条件（仅 walk-forward 模式使用）。"""
         m = self.config.EARLY_STOP_WINDOW
         if len(metrics) < max(self.config.EARLY_STOP_MIN_ROUNDS, m):
             return False
@@ -782,6 +999,7 @@ class FactorLibraryIterationEngine:
         return result
 
     def _save_final_library_artifact(self, output_dir: str, results: Dict) -> str:
+        """将最终出库结果与各轮指标固化为 `final_library.json`。"""
         if not output_dir:
             output_dir = "outputs/performance_tracking"
 
@@ -808,6 +1026,10 @@ class FactorLibraryIterationEngine:
         return final_path
 
     def _evaluate_selected_factors(self, selected_ids: List[str], day: int) -> Dict:
+        """为上一轮已选因子构造本轮更新输入 `performance_data`。
+
+        该函数输出是 `update_from_performance` 的输入，不直接参与当轮排序。
+        """
         performance_data = {}
         icir_by_factor = {}
         ls_by_factor = {}
@@ -914,6 +1136,7 @@ class FactorLibraryIterationEngine:
             avg_oos_ls = np.mean([x["oos_ls_mean"] for x in round_metrics])
             avg_turnover = np.mean([x["turnover"] for x in round_metrics[1:]]) if len(round_metrics) > 1 else 1.0
             stable_count = sum(1 for x in round_metrics if bool(x.get("stability_pass", False)))
+            candidate_count = sum(1 for x in round_metrics if bool(x.get("selection_candidate", False)))
             print("\n3. OOS与稳定性:")
             if split:
                 print(f"   验证集区间: {split.get('val_start_date')} ~ {split.get('val_end_date')}")
@@ -921,6 +1144,7 @@ class FactorLibraryIterationEngine:
             print(f"   平均OOS LS均值: {avg_oos_ls:.6f}")
             print(f"   平均换手率: {avg_turnover:.1%}")
             print(f"   稳定性通过轮次: {stable_count}/{len(round_metrics)}")
+            print(f"   出库候选轮次: {candidate_count}/{len(round_metrics)}")
 
         print("\n4. 因子参数:")
         print(f"   平均α: {results['factor_alpha_mean']:.2f}")
@@ -1003,6 +1227,7 @@ class FactorLibraryIterationEngine:
                 "date": m.get("date"),
                 "asof_date": m.get("asof_date"),
                 "stability_pass": bool(m.get("stability_pass", False)),
+                "selection_candidate": bool(m.get("selection_candidate", False)),
                 "is_selected_round": (selected_round == r),
                 "is_last_round": (last_round == r),
                 "oos_icir": m.get("oos_icir"),
@@ -1010,8 +1235,12 @@ class FactorLibraryIterationEngine:
                 "oos_ls_rtn": m.get("oos_ls_mean"),
                 "turnover": m.get("turnover"),
                 "oos_excess_vs_prevlib": m.get("oos_excess_vs_prevlib"),
+                "oos_excess_vs_anchor": m.get("oos_excess_vs_anchor"),
                 "d_oos_sharpe": m.get("d_oos_sharpe"),
                 "d_oos_icir": m.get("d_oos_icir"),
+                "improve_primary_vs_prev": m.get("improve_primary_vs_prev"),
+                "improve_primary_vs_anchor": m.get("improve_primary_vs_anchor"),
+                "improve_secondary_vs_anchor": m.get("improve_secondary_vs_anchor"),
                 "test_oos_icir": m.get("test_oos_icir"),
                 "test_oos_sharpe": m.get("test_oos_sharpe"),
                 "test_oos_ls_rtn": m.get("test_oos_ls_mean"),

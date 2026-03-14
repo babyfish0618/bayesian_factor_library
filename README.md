@@ -1,245 +1,161 @@
 # 贝叶斯因子库维护系统
 
-## 项目概述
+本仓库实现一个面向“因子库维护”的贝叶斯选择系统：在已有因子池中，按轮次选择固定规模因子库，并根据新增观测持续更新后验参数。
 
-从AlphaPROBE论文中抽取**贝叶斯检索器模块**，独立应用于**因子库维护问题**。
+当前主链路为 Iteration3+（多窗口打分、边际贡献评估、稳定性筛选出库、真实数据/模拟数据双入口）。
 
-### 核心问题
-```
-已有：N个因子（有历史表现数据）
-目标：定期（如每月）选择K个最优因子
-约束：考虑因子质量、多样性、稳定性、演化潜力
-方法：使用贝叶斯优化（Thompson Sampling）进行智能选择
-```
+## 当前主链路（与代码一致）
 
-### 与AlphaPROBE的关系
-- **抽取模块**：贝叶斯检索器（Thompson Sampling）
-- **独立应用**：因子库维护（非因子生成）
-- **创新点**：将贝叶斯优化应用于因子选择而非因子生成
+核心流程：
 
-## 快速开始
+1. 数据准备（模拟或真实数据）
+2. Observe/Update：使用上一轮入库因子的新增表现更新后验
+3. Select：`aggregate_score + Thompson Sampling` 选新库
+4. Validation/Test 评估：计算 OOS 指标
+5. 稳定性判定与最终出库（按 `EVAL_MODE`）
 
-### 安装
-```bash
-cd bayesian_factor_lib
-# 目前是纯Python，无需安装
-```
+关键实现文件：
 
-### 运行测试
-```bash
-python3 src/test_mvp.py
-```
+- `src/workflows/factor_library_iteration_engine.py`：单场景迭代引擎（主流程）
+- `src/core/bayesian_selector_v2.py`：因子选择与贝叶斯更新
+- `src/core/factor_enhanced.py`：因子状态与多窗口统计
+- `src/evaluation/marginal_contrib.py`：未选中因子边际贡献评估
+- `src/evaluation/portfolio_simulator.py`：组合模拟与替换评估
+- `src/core/correlation_calculator.py`：相关性计算
+- `src/simulation/latent_factor_data_simulator.py`：模拟数据与标签生成
+- `src/workflows/real_data_iteration_engine.py`：真实数据单场景流程
+- `src/workflows/asof_library_generator.py`：多 `asof_date` 滚动出库
 
-### 基本使用
-```python
-from src.mvp_selector import Factor, MVPBayesianSelector
+说明：
 
-# 1. 创建因子
-factors = [
-    Factor(id="factor_001", expression="Div($high, $close)", topic="price_momentum"),
-    # ... 更多因子
-]
+- 历史路径（`src/archive`、`src/core/__archive`、`src/simulation/__archive`、`src/tests/_archive`）不是当前主链路。
+- README 不再描述 `mvp_selector`、`integrated_selector`、`test_mvp.py` 等旧模块。
 
-# 2. 初始化选择器
-selector = MVPBayesianSelector(factors, target_size=50)
+## 项目结构（主链路视角）
 
-# 3. 选择因子
-selected_ids = selector.select_factors("2024-01-31")
-
-# 4. 模拟表现数据（实际应从真实数据获取）
-performance_data = {
-    fid: {'icir': 1.5, 'rank_percentile': 0.3}
-    for fid in selected_ids
-}
-
-# 5. 更新贝叶斯参数
-selector.update_from_performance(selected_ids, performance_data)
-```
-
-## 核心算法
-
-### 1. Thompson Sampling
-```python
-# 为每个因子从Beta分布采样
-bayesian_score = np.random.beta(factor.alpha, factor.beta)
-```
-
-### 2. 三套评价标准
-1. **采样打分标准**：选择因子时使用（预测未来表现）
-2. **判断成功-选中因子**：更新贝叶斯参数时使用（实际表现）
-3. **判断成功-没选中因子**：更新贝叶斯参数时使用（边际贡献）
-
-### 3. 边际贡献评估
-评估没选中因子的潜在价值，考虑：
-- 近期ICIR表现
-- 与选中因子的相关性
-- 加入后的组合改善（模拟）
-
-## 项目结构
-
-```
-bayesian_factor_lib/
-├── src/                    # 源代码（分层结构）
-│   ├── core/              # 核心算法
-│   │   ├── mvp_selector.py          # MVP贝叶斯选择器
-│   │   ├── integrated_selector.py   # 集成选择器
-│   │   ├── factor_enhanced.py       # 增强版因子类 (迭代3)
-│   │   ├── correlation_calculator.py # 相关性计算模块 (迭代3)
-│   │   └── bayesian_selector_v2.py  # 新版贝叶斯选择器 (迭代3)
-│   ├── evaluation/        # 评估系统
-│   │   ├── portfolio_simulator.py   # 组合模拟模块 (迭代3)
-│   │   └── marginal_contrib.py      # 边际贡献评估模块 (迭代3)
-│   ├── simulation/        # 数据模拟
-│   │   └── stock_simulator.py       # 正确的股票数据模拟器
-│   ├── utils/            # 工具函数
-│   │   └── config_manager.py        # 配置管理器 (迭代3)
-│   ├── tests/            # 测试代码
-│   │   ├── test_mvp.py              # MVP测试
-│   │   ├── minimal_test.py          # 核心逻辑验证
-│   │   └── quick_test.py            # 快速测试
-│   ├── archive/          # 历史版本
-│   │   ├── stock_simulator_v2.py    # 版本2
-│   │   ├── stock_simulator_v3.py    # 版本3
-│   │   └── ...                     # 其他中间版本
-│   └── __init__.py       # 包导出
-├── config/                # 配置文件
-│   └── evaluation_config.yaml      # 评价配置 (迭代3)
-├── docs/                   # 设计文档
-│   ├── DESIGN_DECISIONS.md    # 设计决策记录
-│   ├── PAPER_COMPARISON.md    # 与AlphaPROBE对比
-│   ├── ITERATION_LOG.md       # 迭代日志
-│   ├── EVALUATION_STANDARDS.md # 评价标准清单
-│   └── ITERATION3_SUMMARY.md  # 迭代3总结 (新增)
-├── examples/               # 使用示例（待添加）
-├── run_demo.py            # 演示程序
-└── README.md              # 项目说明
+```text
+.
+├── src/
+│   ├── core/
+│   │   ├── bayesian_selector_v2.py
+│   │   ├── factor_enhanced.py
+│   │   └── correlation_calculator.py
+│   ├── evaluation/
+│   │   ├── marginal_contrib.py
+│   │   ├── portfolio_simulator.py
+│   │   ├── library_tracker.py
+│   │   └── library_dynamics_plotter.py
+│   ├── simulation/
+│   │   └── latent_factor_data_simulator.py
+│   ├── workflows/
+│   │   ├── factor_library_iteration_engine.py
+│   │   ├── real_data_iteration_engine.py
+│   │   └── asof_library_generator.py
+│   ├── experiments/
+│   │   ├── factor_library_scenario_experiment.py
+│   │   ├── factor_library_stability_experiment.py
+│   │   └── phase_regime_comparison_experiment.py
+│   └── tests/
+│       ├── test_performance.py
+│       ├── experiment_generate_sim_data.py
+│       ├── experiment_phase_regime_comparison.py
+│       ├── experiment_real_data_single.py
+│       ├── experiment_real_data_asof_rolling.py
+│       └── experiment_stability_early_stop.py
+├── config/
+│   └── evaluation_config.yaml
+├── docs/
+│   ├── CODE_ARCHITECTURE.md
+│   ├── EVALUATION_STANDARDS.md
+│   ├── FACTOR_LIBRARY_EVAL_PROTOCOL.md
+│   ├── PARAMETER_MAPPING.md
+│   └── example.md
+└── AI_CONTEXT.md / AGENTS.md / AI_LOG.md
 ```
 
-## 设计原则
+## 运行方式
 
-1. **渐进式开发**：从简单MVP开始，逐步增加复杂度
-2. **模块化设计**：每个功能独立，便于测试和替换
-3. **可配置性**：所有参数可配置，便于调优
-4. **可解释性**：记录所有决策过程，便于分析和调试
+环境：
 
-## 测试结果
+- Python 3.10+（纯 Python 项目）
+- 依赖安装：`pip install -r requirements.txt`
 
-### 算法有效性
-```
-好因子平均成功率: 0.921
-差因子平均成功率: 0.381
-差异: 0.539 (显著)
-```
-
-### 因子类型分析
-| 因子类型 | 平均成功率 | 平均ICIR | 数量 |
-|----------|------------|----------|------|
-| 稳定好因子 | 0.93 | 1.93 | 20 |
-| 新兴好因子 | 0.91 | 1.78 | 20 |
-| 波动大因子 | 0.52 | 1.06 | 20 |
-| 近期失效因子 | 0.40 | 0.47 | 20 |
-| 一直差因子 | 0.37 | 0.36 | 20 |
-
-## 迭代3完成：多指标多时间窗口评价系统
-
-迭代3已成功完成，实现了完整的多指标多时间窗口评价系统。
-
-### 主要成果
-
-1. **配置系统** (`config/evaluation_config.yaml`, `src/utils/config_manager.py`)
-   - YAML配置文件管理
-   - 多时间窗口配置 (选择/评估不同窗口)
-   - 多指标权重配置 (ICIR/收益/排名/稳定性)
-   - 成功阈值配置 (区分选中/没选中)
-
-2. **增强版因子类** (`src/core/factor_enhanced.py`)
-   - 多指标存储 (IC, ICIR, 多空收益, 排名等)
-   - 多时间窗口分析 (5/20/60天)
-   - **正确ICIR计算**: `ICIR = mean(IC) / std(IC)`
-
-3. **相关性计算模块** (`src/core/correlation_calculator.py`)
-   - 基于真实时间序列计算相关性
-   - 支持Pearson/Spearman/Kendall方法
-   - 计算相关性矩阵和显著性检验
-
-4. **组合模拟模块** (`src/evaluation/portfolio_simulator.py`)
-   - 多种组合构建方法 (等权/ICIR加权/夏普优化等)
-   - 多种因子替换策略 (相关性/有效性/组合优化)
-   - 完整的组合表现评估
-
-5. **边际贡献评估模块** (`src/evaluation/marginal_contrib.py`)
-   - 集成相关性计算和组合模拟
-   - 多维度评分系统 (边际改善/相关性/因子质量/可行性)
-   - 评估结果分类 (SUCCESS/FAILURE/NEUTRAL/UNCERTAIN)
-
-6. **新版贝叶斯选择器 (V2)** (`src/core/bayesian_selector_v2.py`)
-   - 集成所有新模块
-   - 多时间窗口多指标选择
-   - 集成边际贡献评估的更新逻辑
-   - 完整的生命周期管理
-
-### 使用新版系统
+常用入口：
 
 ```bash
-# 运行新版选择器测试
-python3 src/core/bayesian_selector_v2.py
+# 1) 模拟数据多场景实验（默认）
+python src/tests/test_performance.py
 
-# 查看配置
-cat config/evaluation_config.yaml
+# 2) 仅 baseline 场景
+python src/tests/test_performance.py --baseline-only --seed 42
 
-# 运行演示程序
-python3 run_demo.py
+# 3) 分阶段状态转移对照实验
+python src/tests/experiment_phase_regime_comparison.py --baseline-only
+
+# 4) 仅生成模拟数据（真实数据格式）
+python src/tests/experiment_generate_sim_data.py --output-root data/simulated_demo
+
+# 5) 真实数据单场景
+python src/tests/experiment_real_data_single.py \
+  --daily-returns <path/to/daily_returns.csv> \
+  --factors-dir <path/to/factors_dir>
+
+# 6) 多 asof 滚动出库
+python src/tests/experiment_real_data_asof_rolling.py \
+  --daily-returns <path/to/daily_returns.csv> \
+  --factors-dir <path/to/factors_dir> \
+  --asof-dates 2025-07-01,2025-08-01
 ```
 
-### 文档
+参数细节见 `docs/example.md` 与 `docs/PARAMETER_MAPPING.md`。
 
-- **迭代3总结**: `docs/ITERATION3_SUMMARY.md`
-- **评价标准清单**: `docs/EVALUATION_STANDARDS.md`
-- **设计决策**: `docs/DESIGN_DECISIONS.md`
-- **迭代日志**: `docs/ITERATION_LOG.md`
+## 配置与评估口径
 
-系统现在已准备好用于实际的因子库维护和管理任务。
+统一配置文件：
 
-## 开发计划
+- `config/evaluation_config.yaml`
 
-### 已完成
-- [x] 迭代1：MVP基础框架（Thompson Sampling + 简化评价）
-- [x] 迭代2：正确的股票数据模拟器（数学精确版本）
-- [x] 迭代2.5：评价标准分析与重构
-- [x] 迭代3：多指标多时间窗口评价系统（生产就绪版本）
+重点参数：
 
-### 进行中
-- [ ] 迭代4：性能测试和参数调优
-- [ ] 迭代5：真实数据接口集成
+- `annualization_days`：全局年化天数
+- `time_windows`：选择/评估窗口与 `min_periods`
+- `success_thresholds`：选中/未选中判定阈值
+- `bayesian.selection_blend`：`aggregate_score` 与 Thompson 采样融合权重
+- `marginal_contribution.scoring`：边际贡献综合评分规则
 
-### 待完成
-- [ ] 迭代6：超参数学习
-- [ ] 迭代7：性能优化
-- [ ] 迭代8：生产环境部署
+评估协议与口径：
 
-## 与AlphaPROBE的对比
+- `docs/FACTOR_LIBRARY_EVAL_PROTOCOL.md`
+- `docs/EVALUATION_STANDARDS.md`
 
-| 维度 | AlphaPROBE (原论文) | 我们的项目 |
-|------|-------------------|-----------|
-| **核心问题** | 因子生成和演化 | 因子库维护和选择 |
-| **输入** | 初始因子 + LLM生成新因子 | 现有因子库（N个因子） |
-| **输出** | 新生成的因子 + DAG演化历史 | 选择的K个最优因子 |
-| **贝叶斯应用** | 选择父因子进行演化 | 选择最优因子进行保留 |
-| **创新点** | DAG导航 + LLM生成 | 边际贡献评估 + 三标准体系 |
-| **系统成熟度** | 研究原型 | 生产就绪版本 |
+## 主要输出产物
 
-## 贡献指南
+默认输出目录：`outputs/performance_tracking/<run_tag>/`
 
-1. 遵循渐进式开发原则
-2. 每次迭代都要有可验证的结果
-3. 更新设计文档和迭代日志
-4. 添加单元测试
-5. 保持与AlphaPROBE的对比分析
+常见文件：
 
-## 许可证
+- `round_summary.csv`
+- `factor_round_status.csv`
+- `library_metrics.json`
+- `round_compact_summary.csv`
+- `validation_dynamics.svg`
+- `test_dynamics.svg`（有测试集时）
+- `final_library.json`
 
-MIT License
+多 asof 任务额外输出：
 
-## 作者
+- `asof_library_summary.csv`
+- `asof_library_overlap.csv`
+- `asof_library_seq_turnover.csv`
+- `asof_library_factors.json`
 
-小鱼爬爬量化研究助手 🐟📊
+## 文档与协作约束
+
+- 先读：`AI_CONTEXT.md`、`AGENTS.md`、`AI_LOG.md`
+- 主文档：`docs/CODE_ARCHITECTURE.md`、`docs/example.md`
+- 历史代码/文档默认可跳过：`archive`、`__archive`、`docs/_archive`
+
+## 已知注意事项
+
+- 运行真实数据入口前请先安装 `requirements.txt` 依赖。
+- `daily_returns / factors / pool` 需遵循本文与 `docs/REAL_DATA_INTEGRATION_GUIDE.md` 的字段约定。

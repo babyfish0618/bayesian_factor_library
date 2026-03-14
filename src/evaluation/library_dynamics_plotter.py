@@ -14,6 +14,32 @@ def _points(xs, ys, x_min, x_max, y_min, y_max, left, top, width, height):
     return out
 
 
+def _rank_desc(rounds: List[int], values: List[Optional[float]], target_round: Optional[int]) -> Optional[int]:
+    """返回指定轮次在该指标上的降序名次（1=最好）。
+
+    规则:
+    - 仅在非空样本内排名；
+    - 并列值采用并列名次（competition ranking: 1,2,2,4）。
+    """
+    if target_round is None or target_round not in rounds:
+        return None
+    idx = rounds.index(target_round)
+    target_value = values[idx]
+    if target_value is None:
+        return None
+
+    valid = [v for v in values if v is not None]
+    if not valid:
+        return None
+    better = sum(1 for v in valid if v > target_value)
+    return better + 1
+
+
+def _valid_count(values: List[Optional[float]]) -> int:
+    """统计该指标可参与排名的有效轮次数。"""
+    return sum(1 for v in values if v is not None)
+
+
 def _panel(
     title: str,
     rounds: List[int],
@@ -26,8 +52,12 @@ def _panel(
     y: int,
     w: int,
     h: int,
+    selected_rank: Optional[int] = None,
+    last_rank: Optional[int] = None,
+    rank_denominator: Optional[int] = None,
 ):
-    ml, mr, mt, mb = 44, 16, 24, 30
+    mt = 40 if rank_denominator is not None else 24
+    ml, mr, mb = 44, 16, 30
     left = x + ml
     top = y + mt
     width = w - ml - mr
@@ -45,6 +75,14 @@ def _panel(
     out = []
     out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="white" stroke="#dddddd"/>')
     out.append(f'<text x="{x+8}" y="{y+16}" font-size="13" fill="#222">{title}</text>')
+    if rank_denominator is not None:
+        sel_text = "-" if selected_rank is None else f"{selected_rank}/{rank_denominator}"
+        last_text = "-" if last_rank is None else f"{last_rank}/{rank_denominator}"
+        out.append(
+            f'<text x="{x+8}" y="{y+30}" font-size="10" fill="#666">'
+            f'rank(desc) sel: {sel_text} | last: {last_text}'
+            "</text>"
+        )
     out.append(f'<line x1="{left}" y1="{top+height}" x2="{left+width}" y2="{top+height}" stroke="#999"/>')
     out.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+height}" stroke="#999"/>')
     for i in range(1, 4):
@@ -210,15 +248,29 @@ def export_test_dynamics_svg(
             f.write(svg)
         return
 
+    icir_vals = [None if v is None else float(v) for v in icir]
+    sharpe_vals = [None if v is None else float(v) for v in sharpe]
+    rtn_vals = [None if v is None else float(v) for v in rtn]
+
+    sel_rank_icir = _rank_desc(rounds, icir_vals, selected_round)
+    sel_rank_sharpe = _rank_desc(rounds, sharpe_vals, selected_round)
+    sel_rank_rtn = _rank_desc(rounds, rtn_vals, selected_round)
+    last_rank_icir = _rank_desc(rounds, icir_vals, last_round)
+    last_rank_sharpe = _rank_desc(rounds, sharpe_vals, last_round)
+    last_rank_rtn = _rank_desc(rounds, rtn_vals, last_round)
+
     W, H = 1320, 560
     p1 = _panel(
         title="Test ICIR",
         rounds=rounds,
-        values=[None if v is None else float(v) for v in icir],
+        values=icir_vals,
         color="#457b9d",
         stability_flags=stability_flags,
         selected_round=selected_round,
         last_round=last_round,
+        selected_rank=sel_rank_icir,
+        last_rank=last_rank_icir,
+        rank_denominator=_valid_count(icir_vals),
         x=20,
         y=40,
         w=420,
@@ -227,11 +279,14 @@ def export_test_dynamics_svg(
     p2 = _panel(
         title="Test Sharpe (LS)",
         rounds=rounds,
-        values=[None if v is None else float(v) for v in sharpe],
+        values=sharpe_vals,
         color="#264653",
         stability_flags=stability_flags,
         selected_round=selected_round,
         last_round=last_round,
+        selected_rank=sel_rank_sharpe,
+        last_rank=last_rank_sharpe,
+        rank_denominator=_valid_count(sharpe_vals),
         x=450,
         y=40,
         w=420,
@@ -240,11 +295,14 @@ def export_test_dynamics_svg(
     p3 = _panel(
         title="Test rtn (LS mean)",
         rounds=rounds,
-        values=[None if v is None else float(v) for v in rtn],
+        values=rtn_vals,
         color="#f4a261",
         stability_flags=stability_flags,
         selected_round=selected_round,
         last_round=last_round,
+        selected_rank=sel_rank_rtn,
+        last_rank=last_rank_rtn,
+        rank_denominator=_valid_count(rtn_vals),
         x=880,
         y=40,
         w=420,
@@ -264,6 +322,8 @@ def export_test_dynamics_svg(
 <rect x="0" y="0" width="{W}" height="{H}" fill="#fafafa"/>
 <text x="24" y="22" font-size="14" fill="#111">Test Dynamics {title_suffix}</text>
 <text x="24" y="36" font-size="11" fill="#555">stable rounds: {stable_cnt}/{len(rounds)} | selected_round: {selected_round} | last_round: {last_round}</text>
+<text x="24" y="50" font-size="11" fill="#555">selected_round rank(desc): ICIR #{sel_rank_icir}, Sharpe #{sel_rank_sharpe}, rtn #{sel_rank_rtn}</text>
+<text x="24" y="64" font-size="11" fill="#555">last_round rank(desc): ICIR #{last_rank_icir}, Sharpe #{last_rank_sharpe}, rtn #{last_rank_rtn}</text>
 {p1}{p2}{p3}
 {''.join(legend)}
 </svg>"""

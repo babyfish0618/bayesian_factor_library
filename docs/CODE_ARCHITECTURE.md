@@ -152,7 +152,11 @@ graph TB
 - 支持两种评估模式：
 - `strict_holdout`（train迭代 + 固定validation评估）
 - `walk_forward_test`（滚动到test末尾）
-- `strict_holdout` 最终选库为“稳定性通过轮次中的Validation最优轮次”，并保留最后一轮对照
+- `strict_holdout` 最终选库使用“参数化双基准规则”：
+- 先按 `library_selection.stability_gate` 计算 `stability_pass`
+- 再按 `vs_prev + vs_anchor` 阈值计算 `selection_candidate`
+- 在候选轮次中选 Validation 最优；若无候选按 `library_selection.fallback` 回退
+- 同时保留最后一轮对照
 - 输出 `final_library.json`，作为后续融合阶段输入候选
 - 数据准备步骤已抽象为 `_prepare_data()`，支持子类覆写
 - 新增切分边界隔离：

@@ -138,10 +138,11 @@ def process_data(data: pd.DataFrame) -> pd.DataFrame:
 # 六、AI_LOG.md 记录规则
 
 所有 AI 修改必须记录在 AI_LOG.md。
-记录必须追加，不允许删除历史。
+记录必须保留历史，不允许删除历史。
+记录顺序必须为**从近到远（倒序）**，即最新记录放在文件最前面（标题下方）。
 
 ```
-记录格式
+记录格式（倒序写入：新增记录插入到AI_LOG.md最前面）
 ## YYYY-MM-DD HH:MM
 
 ### 时间

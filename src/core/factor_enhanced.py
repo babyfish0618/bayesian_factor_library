@@ -79,9 +79,21 @@ class EnhancedFactor:
         """年化天数（统一从配置读取）"""
         return float(self.config.get("annualization_days", 250))
 
-    def _ic_min_periods(self) -> int:
-        """IC/ICIR最小样本数（统一从配置读取）"""
-        return int(self.config.get("ic_min_periods", 10))
+    def _ic_min_periods_abs(self) -> int:
+        """IC/ICIR最小样本绝对下限。"""
+        return max(1, int(self.config.get("ic_min_periods_abs", 5)))
+
+    def _ic_min_periods_ratio(self) -> float:
+        """IC/ICIR最小样本比例下限（相对当前窗口长度）。"""
+        return float(self.config.get("ic_min_periods_ratio", 0.5))
+
+    def get_required_ic_periods(self, window_size: int) -> int:
+        """计算给定窗口长度下的 IC/ICIR 最小有效样本门槛。"""
+        window_n = max(1, int(window_size))
+        ratio = self._ic_min_periods_ratio()
+        ratio = min(max(ratio, 0.0), 1.0)
+        ratio_floor = int(np.ceil(window_n * ratio))
+        return max(self._ic_min_periods_abs(), ratio_floor)
     
     def add_daily_performance(self, date: str, **kwargs):
         """添加日度表现数据"""
@@ -108,7 +120,12 @@ class EnhancedFactor:
         ]
     
     def get_recent_performance(self, lookback_days: int, end_date: Optional[str] = None) -> List[FactorPerformance]:
-        """获取最近N天的表现数据"""
+        """获取截至 `end_date` 的最近 N 条表现记录。
+
+        说明:
+        - 这里按“记录条数”回看，而非自然日历天数。
+        - 若 `end_date` 为空，默认使用当前历史中的最后日期。
+        """
         if not self.performance_history:
             return []
         
@@ -131,16 +148,22 @@ class EnhancedFactor:
         start_idx = max(0, end_idx - lookback_days + 1)
         return self.performance_history[start_idx:end_idx+1]
     
-    def calculate_icir(self, performances: List[FactorPerformance]) -> float:
-        """计算ICIR (IC均值 / IC标准差)"""
+    def calculate_icir(self, performances: List[FactorPerformance], window_size: Optional[int] = None) -> float:
+        """计算 ICIR = mean(IC) / std(IC)。
+
+        返回约定:
+        - 有效样本不足时返回 `np.nan`（表示“不可计算”而非“中性”）。
+        - 标准差近似为 0 时返回 `0.0`（表示“有样本但无波动信息”）。
+        """
         if not performances:
-            return 0.0
+            return np.nan
         
         # 提取有效IC值
         ic_values = [p.ic for p in performances if p.ic is not None]
         
-        if len(ic_values) < self._ic_min_periods():  # 至少满足最小样本数
-            return 0.0
+        required = self.get_required_ic_periods(window_size or len(performances))
+        if len(ic_values) < required:
+            return np.nan
         
         ic_mean = np.mean(ic_values)
         ic_std = np.std(ic_values)
@@ -148,7 +171,7 @@ class EnhancedFactor:
         if ic_std < 1e-8:
             return 0.0
         
-        return ic_mean / ic_std
+        return float(ic_mean / ic_std)
     
     def calculate_ls_return_stats(self, performances: List[FactorPerformance]) -> Dict:
         """计算多空收益统计"""
@@ -211,17 +234,20 @@ class EnhancedFactor:
             
             if not recent_perf:
                 stats[f'window_{window}'] = {
-                    'icir': 0.0,
+                    'icir': np.nan,
                     'ls_return_mean': 0.0,
                     'ls_return_sharpe': 0.0,
                     'avg_rank': 1.0,
                     'win_rate': 0.0,
-                    'data_points': 0
+                    'data_points': 0,
+                    'required_ic_points': self.get_required_ic_periods(window),
+                    'effective_ic_points': 0,
                 }
                 continue
             
             # 计算ICIR
-            icir = self.calculate_icir(recent_perf)
+            icir = self.calculate_icir(recent_perf, window_size=window)
+            ic_values = [p.ic for p in recent_perf if p.ic is not None]
             
             # 计算多空收益统计
             ls_stats = self.calculate_ls_return_stats(recent_perf)
@@ -236,7 +262,9 @@ class EnhancedFactor:
                 'ls_return_sharpe': ls_stats['sharpe'],
                 'avg_rank': avg_rank,
                 'win_rate': ls_stats['win_rate'],
-                'data_points': len(recent_perf)
+                'data_points': len(recent_perf),
+                'required_ic_points': self.get_required_ic_periods(window),
+                'effective_ic_points': len(ic_values),
             }
         
         # 缓存结果
@@ -252,6 +280,10 @@ class EnhancedFactor:
             window_weights: 时间窗口权重 {5: 0.3, 20: 0.4, 60: 0.3}
             indicator_weights: 指标权重 {'icir': 0.4, 'ls_return': 0.3, 'rank': 0.2, 'stability': 0.1}
             end_date: 结束日期
+
+        评分方向约定:
+        - icir / ls_return / stability 越大越好
+        - rank_percentile 越小越好（内部会做反向处理）
         """
         # 获取多窗口统计
         windows = list(window_weights.keys())
@@ -262,25 +294,33 @@ class EnhancedFactor:
         
         for window, window_weight in window_weights.items():
             window_stats = stats.get(f'window_{window}')
-            if not window_stats or window_stats['data_points'] < 5:
+            if not window_stats or window_stats['data_points'] <= 0:
                 continue
-            
-            # 归一化各项指标
-            icir_score = self._normalize_icir(window_stats['icir'])
-            ls_return_score = self._normalize_ls_return(window_stats['ls_return_mean'])
-            rank_score = 1.0 - window_stats['avg_rank']  # 排名越前得分越高
-            
-            # 稳定性得分 (用夏普比率近似)
-            stability_score = self._normalize_sharpe(window_stats['ls_return_sharpe'])
-            
-            # 窗口内综合得分
-            window_score = (
-                indicator_weights.get('icir', 0.0) * icir_score +
-                indicator_weights.get('ls_return', 0.0) * ls_return_score +
-                indicator_weights.get('rank', 0.0) * rank_score +
-                indicator_weights.get('stability', 0.0) * stability_score
-            )
-            
+
+            # 指标缺失时按有效指标重归一化权重，避免 NaN 污染最终分。
+            metric_values = {
+                'icir': self._normalize_icir(window_stats['icir']),
+                'ls_return': self._normalize_ls_return(window_stats['ls_return_mean']),
+                'rank': 1.0 - window_stats['avg_rank'],  # 排名越前得分越高
+                'stability': self._normalize_sharpe(window_stats['ls_return_sharpe']),
+            }
+            metric_weights = {
+                'icir': float(indicator_weights.get('icir', 0.0)),
+                'ls_return': float(indicator_weights.get('ls_return', 0.0)),
+                'rank': float(indicator_weights.get('rank', indicator_weights.get('rank_percentile', 0.0))),
+                'stability': float(indicator_weights.get('stability', 0.0)),
+            }
+            valid_pairs = [
+                (metric_weights[name], metric_values[name])
+                for name in ("icir", "ls_return", "rank", "stability")
+                if np.isfinite(metric_values[name]) and metric_weights[name] > 0
+            ]
+            if not valid_pairs:
+                continue
+
+            metric_weight_sum = sum(w for w, _ in valid_pairs)
+            window_score = sum((w / metric_weight_sum) * v for w, v in valid_pairs)
+
             total_score += window_weight * window_score
             total_weight += window_weight
         
@@ -291,18 +331,24 @@ class EnhancedFactor:
     
     def _normalize_icir(self, icir: float) -> float:
         """归一化ICIR得分"""
+        if icir is None or not np.isfinite(icir):
+            return np.nan
         # 使用sigmoid函数
         # ICIR=0 → 0.5, ICIR=3 → 0.95
         return 1.0 / (1.0 + np.exp(-icir))
     
     def _normalize_ls_return(self, ls_return: float) -> float:
         """归一化多空收益"""
+        if ls_return is None or not np.isfinite(ls_return):
+            return np.nan
         # 日度收益，年化约 日收益*annualization_days
         annualized = ls_return * self._annualization_days()
         return min(max(annualized / 0.5, 0.0), 1.0)  # 年化50%得1.0
     
     def _normalize_sharpe(self, sharpe: float) -> float:
         """归一化夏普比率"""
+        if sharpe is None or not np.isfinite(sharpe):
+            return np.nan
         return min(max(sharpe / 3.0, 0.0), 1.0)  # 夏普3.0得1.0
     
     def get_success_rate(self) -> float:

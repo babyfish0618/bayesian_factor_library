@@ -1,5 +1,140 @@
 # Codex Modification Log
 
+## 2026-03-14 21:22
+
+### 时间
+2026-03-14 21:22
+
+### 本次任务
+在 `round_summary.csv` 增加成功/失败比例字段（选中、未选中、全候选共6列）。
+
+### 修改文件
+- src/evaluation/library_tracker.py
+- AI_LOG.md
+
+### 主要改动
+- 在 `FactorLibraryTracker.record_round()` 中新增 6 个比例字段：
+- `selected_success_ratio`
+- `selected_failure_ratio`
+- `unselected_success_ratio`
+- `unselected_failure_ratio`
+- `candidate_success_ratio`
+- `candidate_failure_ratio`
+- 比例口径：
+- 选中比例：以 `selected_success_total + selected_failure_total` 为分母；
+- 未选中比例：以 `unselected_success_total + unselected_failure_total` 为分母；
+- 全候选比例：以上两部分 success/failure 合并后为分母；
+- 分母为0时返回 `0.0`，避免除零异常。
+
+### 测试情况
+是否新增测试：否
+是否运行测试：是
+测试结果：通过
+- `python3 -m compileall -q src/evaluation/library_tracker.py`
+
+### 风险与待办
+- 当前“全候选”比例只统计有明确 success/failure 结论的因子，不含 `NEUTRAL/UNCERTAIN`；若你希望分母改为“全部候选数”，需再调整口径定义。
+
+## 2026-03-14 21:10
+
+### 时间
+2026-03-14 21:10
+
+### 本次任务
+将 A 层选择打分改为“4分项全截面分位数标准化”后聚合，并把 `rank_percentile` 口径改为全候选排名；同步标准文档说明。
+
+### 修改文件
+- src/core/bayesian_selector_v2.py
+- src/workflows/factor_library_iteration_engine.py
+- docs/EVALUATION_STANDARDS.md
+- AI_LOG.md
+
+### 主要改动
+- `BayesianSelectorV2`：
+- 新增 `_calculate_cross_sectional_aggregate_scores()`，按当前日期在全候选截面上对 `icir/ls_return/rank/stability` 做 percentile 标准化后聚合。
+- 新增 `_percentile_score_map()`，输出 `[0,1]` 位置分（高值高分，单样本时给 `0.5`）。
+- `_calculate_factor_scores()` 改为使用上述截面聚合分，不再调用单因子绝对值归一化版本。
+- `FactorLibraryIterationEngine._evaluate_selected_factors()`：
+- `rank_percentile` 改为“全候选可评估因子”口径，再回填到上一轮已选因子更新输入。
+- `EVALUATION_STANDARDS.md`：
+- A层明确“4个分项均为截面分位数位置分”，再按权重聚合。
+- B1补充 `rank_percentile` 为全候选口径。
+
+### 测试情况
+是否新增测试：否
+是否运行测试：是
+测试结果：通过
+- `python3 -m compileall -q src/core/bayesian_selector_v2.py`
+- `python3 -m compileall -q src/workflows/factor_library_iteration_engine.py`
+
+### 风险与待办
+- 截面分位标准化后，aggregate_score 变成纯相对分；不同日期间绝对数值可比性下降（更适合“当期排序”，不适合跨期绝对阈值）。
+
+## 2026-03-14 21:06
+
+### 时间
+2026-03-14 21:06
+
+### 本次任务
+将 `rank_percentile` 口径改为“全候选排名”，并在标准文档中明确该口径；同时回答 A 层多指标量纲可比性问题。
+
+### 修改文件
+- src/workflows/factor_library_iteration_engine.py
+- docs/EVALUATION_STANDARDS.md
+- AI_LOG.md
+
+### 主要改动
+- 在 `_evaluate_selected_factors()` 中调整 `rank_percentile` 计算范围：
+- 先对“全候选可评估因子”计算 ICIR 并排序；
+- 再将该全局排名结果回填给上一轮已选因子的 `performance_data`。
+- 不再使用“仅上一轮已选因子内部排序”口径。
+- 在 `docs/EVALUATION_STANDARDS.md`（B1）补充：
+- `rank_percentile` 为已选因子在全候选可评估集合中的排名百分位（越小越好）。
+
+### 测试情况
+是否新增测试：否
+是否运行测试：是
+测试结果：通过
+- `python3 -m compileall -q src/workflows/factor_library_iteration_engine.py`
+
+### 风险与待办
+- 全候选排名口径下，若当日可评估候选数量波动大，`rank_percentile` 的时间可比性会受样本池变化影响；后续可考虑记录当日可评估样本数作为辅指标。
+
+## 2026-03-14 20:55
+
+### 时间
+2026-03-14 20:55
+
+### 本次任务
+按用户指定更新窗口参数；补全文档中“未入选因子替换与成功/失败/不确定判定”全流程，并新增参数到判定步骤的影响路径表；明确 `selected_long` 当前用途。
+
+### 修改文件
+- config/evaluation_config.yaml
+- docs/EVALUATION_STANDARDS.md
+- AI_LOG.md
+
+### 主要改动
+- 更新 `evaluation_config.yaml` 时间窗口参数：
+- `time_windows.selection`: `120 / 250 / 750`
+- `time_windows.evaluation`: `selected_short=60`, `selected_long=120`, `unselected_long=250`
+- `time_windows.ic_calculation`: `min_periods_abs=20`, `min_periods_ratio=0.6`
+- 补充 `docs/EVALUATION_STANDARDS.md`：
+- 增加未入选因子 `x` 的完整判定流程（准备数据 -> 决定替换对象 -> 计算 improvement -> 综合分 -> 四类结果）
+- 明确 `improvement_threshold` 的实际作用（用于 `can_replace`，影响 feasibility 分项）
+- 明确 SUCCESS/FAILURE/NEUTRAL/UNCERTAIN 的触发逻辑
+- 新增“参数 -> 影响路径（未选中评估核心）”表
+- 在 B1 备注中明确：
+- 当前实现里 selected success 判定仅使用 `time_windows.evaluation.selected_short`
+- `time_windows.evaluation.selected_long` 主要用于统计展示/追踪，不参与 success 判定阈值
+
+### 测试情况
+是否新增测试：否
+是否运行测试：否
+测试结果：未运行（本次主要为配置与文档更新）
+
+### 风险与待办
+- 新窗口配置较长（尤其 `long_term=750`），若样本区间不足会显著提高不可计算比例；建议后续通过一次完整实验观察 `NaN/UNCERTAIN` 占比。
+
 ## 2026-03-14 20:14
 
 ### 时间

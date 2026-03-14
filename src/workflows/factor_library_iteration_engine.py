@@ -1029,21 +1029,24 @@ class FactorLibraryIterationEngine:
         """为上一轮已选因子构造本轮更新输入 `performance_data`。
 
         该函数输出是 `update_from_performance` 的输入，不直接参与当轮排序。
+
+        排名口径:
+        - `rank_percentile` 基于“全候选因子（当日可评估子集）”排序；
+        - 不再使用“仅上一轮已选因子内部”排序口径。
         """
         performance_data = {}
         icir_by_factor = {}
         ls_by_factor = {}
         lookback = int(self.selector.config.time_windows.get("evaluation", {}).get("selected_long", 20))
 
-        for fid in selected_ids:
-            factor = self.selector.factors.get(fid)
-            if factor:
-                recent_perf = factor.get_recent_performance(lookback, self.dates[day])
-                if recent_perf:
-                    ic_values = [p.ic for p in recent_perf]
-                    ls_values = [p.ls_return for p in recent_perf]
-                    icir_by_factor[fid] = np.mean(ic_values) / (np.std(ic_values) + 1e-8)
-                    ls_by_factor[fid] = np.mean(ls_values)
+        # 先在全候选上计算可评估因子的 ICIR/LS，用于全局排名口径。
+        for fid, factor in self.selector.factors.items():
+            recent_perf = factor.get_recent_performance(lookback, self.dates[day])
+            if recent_perf:
+                ic_values = [p.ic for p in recent_perf]
+                ls_values = [p.ls_return for p in recent_perf]
+                icir_by_factor[fid] = np.mean(ic_values) / (np.std(ic_values) + 1e-8)
+                ls_by_factor[fid] = np.mean(ls_values)
 
         ranked = sorted(icir_by_factor.items(), key=lambda x: x[1], reverse=True)
         n = len(ranked)
@@ -1051,7 +1054,10 @@ class FactorLibraryIterationEngine:
         for idx, (fid, _) in enumerate(ranked):
             rank_percentile[fid] = (idx / (n - 1)) if n > 1 else 0.5
 
-        for fid in icir_by_factor:
+        # 仅为“上一轮已选因子”回填更新输入，但 rank_percentile 来自全候选排名。
+        for fid in selected_ids:
+            if fid not in icir_by_factor:
+                continue
             performance_data[fid] = {
                 "icir": icir_by_factor[fid],
                 "rank_percentile": rank_percentile[fid],

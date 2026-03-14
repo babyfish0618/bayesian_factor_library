@@ -8,20 +8,20 @@ annualization_days: 250   # 年化天数（全局统一，替代代码中的硬�
 time_windows:
   # 选择因子时的多时间尺度
   selection:
-    short_term: 5      # 短期窗口 (天)
-    medium_term: 20    # 中期窗口 (天) 
-    long_term: 60      # 长期窗口 (天)
+    short_term: 120    # 短期窗口 (天)
+    medium_term: 250   # 中期窗口 (天) 
+    long_term: 750     # 长期窗口 (天)
   
   # 评估成功时的窗口
   evaluation:
-    selected_short: 10     # 选中因子评估窗口 (较短)
-    selected_long: 20      # 选中因子评估窗口 (较长)
-    unselected_long: 40    # 没选中因子边际贡献评估窗口 (较长，更严格)
+    selected_short: 60     # 选中因子评估窗口 (较短)
+    selected_long: 120     # 选中因子评估窗口 (较长)
+    unselected_long: 250   # 没选中因子边际贡献评估窗口 (较长，更严格)
   
   # IC计算相关
   ic_calculation:
-    min_periods_abs: 5      # IC/ICIR最小样本绝对门槛
-    min_periods_ratio: 0.5  # IC/ICIR最小样本比例门槛(相对窗口长度)
+    min_periods_abs: 20     # IC/ICIR最小样本绝对门槛
+    min_periods_ratio: 0.6  # IC/ICIR最小样本比例门槛(相对窗口长度)
 
 # ==================== 指标权重配置 ====================
 indicator_weights:

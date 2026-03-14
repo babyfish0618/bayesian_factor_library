@@ -170,6 +170,32 @@ class FactorLibraryTracker:
             "unselected_failure_total": int(update_result.update_stats.get("unselected_failure", 0)),
             "marginal_evaluations_total": int(update_result.update_stats.get("marginal_evaluations", 0))
         }
+
+        selected_sf_total = round_summary["selected_success_total"] + round_summary["selected_failure_total"]
+        unselected_sf_total = round_summary["unselected_success_total"] + round_summary["unselected_failure_total"]
+        candidate_sf_total = selected_sf_total + unselected_sf_total
+
+        round_summary["selected_success_ratio"] = (
+            round_summary["selected_success_total"] / selected_sf_total if selected_sf_total > 0 else 0.0
+        )
+        round_summary["selected_failure_ratio"] = (
+            round_summary["selected_failure_total"] / selected_sf_total if selected_sf_total > 0 else 0.0
+        )
+        round_summary["unselected_success_ratio"] = (
+            round_summary["unselected_success_total"] / unselected_sf_total if unselected_sf_total > 0 else 0.0
+        )
+        round_summary["unselected_failure_ratio"] = (
+            round_summary["unselected_failure_total"] / unselected_sf_total if unselected_sf_total > 0 else 0.0
+        )
+        round_summary["candidate_success_ratio"] = (
+            (round_summary["selected_success_total"] + round_summary["unselected_success_total"]) / candidate_sf_total
+            if candidate_sf_total > 0 else 0.0
+        )
+        round_summary["candidate_failure_ratio"] = (
+            (round_summary["selected_failure_total"] + round_summary["unselected_failure_total"]) / candidate_sf_total
+            if candidate_sf_total > 0 else 0.0
+        )
+
         self.round_summaries.append(round_summary)
 
         metrics = {

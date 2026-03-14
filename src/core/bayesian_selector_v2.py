@@ -307,13 +307,11 @@ class BayesianSelectorV2:
         else:
             aggregate_w, bayesian_w = aggregate_w / w_sum, bayesian_w / w_sum
         
+        # A层聚合分改为“全截面分位数标准化”后再聚合，提升跨指标可比性。
+        aggregate_scores = self._calculate_cross_sectional_aggregate_scores(current_date)
+
         for fid, factor in self.factors.items():
-            # 获取多时间窗口统计
-            window_weights = self.config.get_window_weights()
-            indicator_weights = self.config.get_indicator_weights_for_selection()
-            
-            # 计算综合得分
-            score = factor.get_aggregate_score(window_weights, indicator_weights, current_date)
+            score = float(aggregate_scores.get(fid, 0.0))
             
             # 贝叶斯得分 (Thompson Sampling)
             bayesian_score = np.random.beta(factor.alpha, factor.beta)
@@ -329,6 +327,98 @@ class BayesianSelectorV2:
             }
         
         return scores
+
+    @staticmethod
+    def _percentile_score_map(raw_map: Dict[str, float]) -> Dict[str, float]:
+        """将同一截面的原始值映射到 [0,1] 分位数得分（高值=高分）。"""
+        items = [(fid, float(v)) for fid, v in raw_map.items() if v is not None and np.isfinite(v)]
+        n = len(items)
+        if n == 0:
+            return {}
+        if n == 1:
+            return {items[0][0]: 0.5}
+
+        values = [v for _, v in items]
+        out: Dict[str, float] = {}
+        for fid, v in items:
+            less = sum(1 for x in values if x < v)
+            equal = sum(1 for x in values if x == v)
+            avg_rank = less + (equal - 1) / 2.0
+            out[fid] = avg_rank / (n - 1)
+        return out
+
+    def _calculate_cross_sectional_aggregate_scores(self, current_date: str) -> Dict[str, float]:
+        """按当前日期横截面分位数标准化后计算 aggregate_score。"""
+        window_weights = self.config.get_window_weights()
+        indicator_weights = self.config.get_indicator_weights_for_selection()
+        windows = list(window_weights.keys())
+
+        # 1) 取每个因子在各窗口的原始统计
+        factor_window_stats: Dict[str, Dict[str, Dict[str, float]]] = {}
+        for fid, factor in self.factors.items():
+            factor_window_stats[fid] = factor.get_multi_window_stats(windows, current_date)
+
+        # 2) 对每个窗口、每个指标做“全截面分位数标准化”
+        metric_names = ("icir", "ls_return", "rank", "stability")
+        metric_pct_by_window: Dict[int, Dict[str, Dict[str, float]]] = {w: {} for w in windows}
+        for window in windows:
+            raw_icir: Dict[str, float] = {}
+            raw_ls_return: Dict[str, float] = {}
+            raw_rank: Dict[str, float] = {}
+            raw_stability: Dict[str, float] = {}
+
+            for fid in self.factors.keys():
+                ws = factor_window_stats[fid].get(f"window_{window}", {})
+                if int(ws.get("data_points", 0)) <= 0:
+                    continue
+                icir_val = ws.get("icir")
+                if icir_val is not None and np.isfinite(icir_val):
+                    raw_icir[fid] = float(icir_val)
+                ls_val = ws.get("ls_return_mean")
+                if ls_val is not None and np.isfinite(ls_val):
+                    raw_ls_return[fid] = float(ls_val)
+                rank_val = ws.get("avg_rank")
+                if rank_val is not None and np.isfinite(rank_val):
+                    # 原始 avg_rank 越小越好，这里先转同向分值再做截面分位数。
+                    raw_rank[fid] = 1.0 - float(rank_val)
+                stability_val = ws.get("ls_return_sharpe")
+                if stability_val is not None and np.isfinite(stability_val):
+                    raw_stability[fid] = float(stability_val)
+
+            metric_pct_by_window[window]["icir"] = self._percentile_score_map(raw_icir)
+            metric_pct_by_window[window]["ls_return"] = self._percentile_score_map(raw_ls_return)
+            metric_pct_by_window[window]["rank"] = self._percentile_score_map(raw_rank)
+            metric_pct_by_window[window]["stability"] = self._percentile_score_map(raw_stability)
+
+        # 3) 每个因子做窗口内指标聚合 + 窗口间聚合（缺失项均重归一）
+        out_scores: Dict[str, float] = {}
+        metric_weight_map = {
+            "icir": float(indicator_weights.get("icir", 0.0)),
+            "ls_return": float(indicator_weights.get("ls_return", 0.0)),
+            "rank": float(indicator_weights.get("rank", indicator_weights.get("rank_percentile", 0.0))),
+            "stability": float(indicator_weights.get("stability", 0.0)),
+        }
+        for fid in self.factors.keys():
+            total_score = 0.0
+            total_w = 0.0
+            for window, window_w in window_weights.items():
+                metric_pairs: List[Tuple[float, float]] = []
+                for metric in metric_names:
+                    mw = metric_weight_map[metric]
+                    if mw <= 0:
+                        continue
+                    v = metric_pct_by_window[window].get(metric, {}).get(fid)
+                    if v is None or not np.isfinite(v):
+                        continue
+                    metric_pairs.append((mw, float(v)))
+                if not metric_pairs:
+                    continue
+                mws = sum(w for w, _ in metric_pairs)
+                window_score = sum((w / mws) * v for w, v in metric_pairs)
+                total_score += float(window_w) * window_score
+                total_w += float(window_w)
+            out_scores[fid] = (total_score / total_w) if total_w > 1e-8 else 0.0
+        return out_scores
     
     def _thompson_sampling_selection(self, candidate_scores: Dict[str, Dict], target_size: int) -> List[str]:
         """Thompson Sampling选择"""
